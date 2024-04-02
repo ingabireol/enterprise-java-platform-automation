@@ -1,0 +1,38 @@
+# Secrets — never commit these
+*.vault
+vault-password*
+*.pem
+*.key
+*.p12
+*.jks
+.env
+.env.*
+!.env.example
+secrets.yml
+!secrets.example.yml
+
+# Ansible
+*.retry
+.ansible/
+ansible/inventories/*/host_vars/*.local.yml
+fact_cache/
+
+# Build & runtime artefacts
+*.log
+*.tar.gz
+*.dump
+*.sql.gz
+artifacts/
+releases/
+tmp/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
+
+# Python
+__pycache__/
+*.pyc
+.venv/
