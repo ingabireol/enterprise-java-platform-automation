@@ -1,0 +1,89 @@
+---
+# Test/UAT tier. Deliberately mirrors production topology and hardening so that
+# a migration rehearsal here is evidence about production, not about test.
+platform_name: efp
+platform_domain: test.efp.example.gov
+app_base_dir: /opt/{{ platform_name }}
+app_data_dir: /var/lib/{{ platform_name }}
+app_log_dir: /var/log/{{ platform_name }}
+app_user: efpsvc
+app_group: efpsvc
+
+change_control_required: true
+maintenance_window: "weekdays 18:00–22:00 CAT"
+
+java_major_version: 21
+java_vendor: temurin
+java_home: /usr/lib/jvm/temurin-21-jdk
+jvm_heap_max: 3g
+jvm_heap_min: 3g
+jvm_gc: G1
+jvm_extra_opts:
+  - "-XX:MaxGCPauseMillis=200"
+  - "-XX:+HeapDumpOnOutOfMemoryError"
+  - "-XX:HeapDumpPath={{ app_log_dir }}/heapdumps"
+  - "-Duser.timezone=Africa/Kigali"
+
+spring_profile: test
+spring_services:
+  - { name: efp-core,        port: 8081, management_port: 9081, heap: 3g }
+  - { name: efp-reporting,   port: 8082, management_port: 9082, heap: 2g }
+  - { name: efp-integration, port: 8083, management_port: 9083, heap: 1g }
+
+tomcat_version: "10.1.34"
+tomcat_http_port: 8080
+tomcat_shutdown_port: 8005
+tomcat_max_threads: 200
+tomcat_context: /efp-ui
+
+nginx_worker_processes: auto
+nginx_client_max_body_size: 64m
+nginx_tls_protocols: "TLSv1.2 TLSv1.3"
+nginx_hsts_max_age: 300
+nginx_upstream_keepalive: 16
+
+postgresql_version: 16
+postgresql_port: 5432
+postgresql_data_dir: /var/lib/pgsql/16/data
+postgresql_max_connections: 200
+postgresql_shared_buffers: 4GB
+postgresql_effective_cache_size: 12GB
+postgresql_work_mem: 8MB
+postgresql_maintenance_work_mem: 512MB
+postgresql_wal_level: replica
+postgresql_archive_mode: "on"
+postgresql_archive_dir: /var/lib/pgsql/wal_archive
+postgresql_replication_user: replicator
+
+backup_root: /backup/{{ platform_name }}
+backup_full_schedule: "Sun *-*-* 01:30:00"
+backup_incremental_schedule: "Mon..Sat *-*-* 01:30:00"
+backup_retention_days: 14
+backup_offsite_enabled: false
+backup_verify_schedule: "Thu *-*-* 04:00:00"
+rpo_minutes: 60
+rto_minutes: 240
+
+prometheus_server: 10.20.40.11
+node_exporter_port: 9100
+promtail_loki_url: "http://10.20.40.11:3100/loki/api/v1/push"
+alert_email: platform-ops@example.gov
+
+hardening_profile: strict
+ssh_permit_root_login: "no"
+ssh_password_authentication: "no"
+ssh_allow_groups: ["sysadmins", "platform-ops", "qa-engineers"]
+ssh_client_alive_interval: 300
+ssh_max_auth_tries: 3
+firewall_backend: nftables
+selinux_state: enforcing
+auditd_enabled: true
+fail2ban_enabled: true
+automatic_security_updates: true
+password_max_age: 90
+umask_default: "027"
+
+ntp_servers: ["10.20.1.10", "10.20.1.11"]
+dns_servers: ["10.20.1.10", "10.20.1.11"]
+search_domains: ["{{ platform_domain }}"]
+timezone: Africa/Kigali
