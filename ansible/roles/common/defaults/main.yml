@@ -1,0 +1,45 @@
+---
+timezone: Africa/Kigali
+ntp_servers: ["pool.ntp.org"]
+dns_servers: []
+search_domains: []
+
+common_base_packages:
+  - curl
+  - vim
+  - git
+  - rsync
+  - tar
+  - unzip
+  - lsof
+  - tcpdump
+  - bind-utils
+  - net-tools
+  - sysstat
+  - htop
+  - jq
+  - chrony
+  - logrotate
+  - policycoreutils-python-utils
+
+# Administrative groups created on every host. Membership is granted by role,
+# never to individuals directly — see docs/security/access-control.md.
+common_admin_groups:
+  - { name: sysadmins,    gid: 4000, sudo: "ALL=(ALL) ALL" }
+  - { name: platform-ops, gid: 4001, sudo: "ALL=(ALL) NOPASSWD: /bin/systemctl, /usr/bin/journalctl, /opt/efp/bin/*" }
+  - { name: dba,          gid: 4002, sudo: "ALL=(postgres) NOPASSWD: ALL" }
+  - { name: auditors,     gid: 4003, sudo: "" }
+
+common_journald_max_use: 2G
+common_journald_max_retention: 30day
+common_sysctl_tuning: true
+common_kernel_tuning:
+  net.core.somaxconn: 4096
+  net.ipv4.tcp_max_syn_backlog: 8192
+  net.ipv4.ip_local_port_range: "10240 65535"
+  net.ipv4.tcp_fin_timeout: 15
+  net.ipv4.tcp_tw_reuse: 1
+  net.ipv4.tcp_keepalive_time: 300
+  vm.swappiness: 10
+  vm.max_map_count: 262144
+  fs.file-max: 2097152

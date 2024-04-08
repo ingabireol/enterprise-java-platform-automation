@@ -1,0 +1,13 @@
+---
+galaxy_info:
+  role_name: common
+  author: Olivier Ingabire
+  description: Baseline configuration applied to every host in the platform.
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: EL
+      versions: ["9"]
+    - name: Ubuntu
+      versions: ["jammy"]
+dependencies: []

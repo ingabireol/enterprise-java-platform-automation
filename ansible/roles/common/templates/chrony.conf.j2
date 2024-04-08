@@ -1,0 +1,20 @@
+# {{ ansible_managed }}
+# Time discipline matters here: financial transaction ordering, TLS validity and
+# log correlation across the estate all assume the clocks agree.
+{% for s in ntp_servers %}
+server {{ s }} iburst
+{% endfor %}
+
+driftfile /var/lib/chrony/drift
+makestep 1.0 3
+rtcsync
+logdir /var/log/chrony
+
+# Refuse to act as a time source for anything outside the platform networks.
+{% if env_tier == 'prod' or env_tier == 'dr' %}
+allow 10.0.0.0/8
+{% endif %}
+deny all
+
+# Alert if we drift more than 100 ms from the source (scraped by node_exporter).
+maxdistance 0.1

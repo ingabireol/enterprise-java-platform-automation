@@ -1,0 +1,13 @@
+
+  {{ platform_name | upper }} platform — {{ env_tier | upper }} tier ({{ site_name }})
+  ------------------------------------------------------------------
+  Host        : {{ inventory_hostname }}
+  Role(s)     : {{ group_names | difference(['all','platform']) | join(', ') }}
+  Managed by  : Ansible. Manual changes will be reverted on the next converge.
+  Runbooks    : docs/runbooks/  |  Change window: {{ maintenance_window }}
+{% if env_tier in ['prod', 'dr'] %}
+  ------------------------------------------------------------------
+  PRODUCTION-CLASS SYSTEM. Changes require an approved change record.
+  All sessions are logged and audited.
+{% endif %}
+

@@ -1,0 +1,8 @@
+# {{ ansible_managed }}
+{% if search_domains | length > 0 %}
+search {{ search_domains | join(' ') }}
+{% endif %}
+{% for ns in dns_servers %}
+nameserver {{ ns }}
+{% endfor %}
+options timeout:2 attempts:2 rotate single-request-reopen

@@ -1,0 +1,144 @@
+---
+# Baseline every host shares: packages, time, name resolution, logging, limits.
+# Deliberately small — anything specific to a workload belongs in its own role.
+
+- name: Gather OS-specific package facts
+  ansible.builtin.set_fact:
+    _pkg_mgr: "{{ 'dnf' if ansible_os_family == 'RedHat' else 'apt' }}"
+  tags: [always]
+
+- name: Install baseline packages
+  ansible.builtin.package:
+    name: "{{ common_base_packages }}"
+    state: present
+  register: _pkg_install
+  retries: 3
+  delay: 10
+  until: _pkg_install is succeeded
+  tags: [common, packages]
+
+- name: Set the system timezone
+  community.general.timezone:
+    name: "{{ timezone }}"
+  notify: Restart chronyd
+  tags: [common, time]
+
+- name: Configure chrony time sources
+  ansible.builtin.template:
+    src: chrony.conf.j2
+    dest: /etc/chrony.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: "chronyd -Q -f %s"
+  notify: Restart chronyd
+  tags: [common, time]
+
+- name: Ensure chronyd is running and enabled
+  ansible.builtin.service:
+    name: chronyd
+    state: started
+    enabled: true
+  tags: [common, time]
+
+- name: Configure resolv.conf
+  ansible.builtin.template:
+    src: resolv.conf.j2
+    dest: /etc/resolv.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: dns_servers | length > 0
+  tags: [common, dns]
+
+- name: Set the hostname
+  ansible.builtin.hostname:
+    name: "{{ inventory_hostname }}"
+  tags: [common, hostname]
+
+- name: Maintain /etc/hosts entries for platform peers
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '^{{ hostvars[item].ansible_host }}\s'
+    line: "{{ hostvars[item].ansible_host }} {{ item }} {{ item }}.{{ platform_domain }}"
+    state: present
+  loop: "{{ groups['platform'] | default([]) }}"
+  when: hostvars[item].ansible_host is defined
+  tags: [common, hosts]
+
+- name: Create administrative groups
+  ansible.builtin.group:
+    name: "{{ item.name }}"
+    gid: "{{ item.gid }}"
+    state: present
+  loop: "{{ common_admin_groups }}"
+  loop_control:
+    label: "{{ item.name }}"
+  tags: [common, accounts]
+
+- name: Install sudo policy per administrative group
+  ansible.builtin.copy:
+    content: "%{{ item.name }} {{ item.sudo }}\n"
+    dest: "/etc/sudoers.d/10-{{ item.name }}"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: "visudo -cf %s"
+  loop: "{{ common_admin_groups | selectattr('sudo', 'ne', '') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+  tags: [common, accounts, sudo]
+
+- name: Configure journald retention and size caps
+  ansible.builtin.template:
+    src: journald.conf.j2
+    dest: /etc/systemd/journald.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart journald
+  tags: [common, logging]
+
+- name: Apply kernel tuning for a network-facing Java workload
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/90-platform.conf
+    reload: true
+    state: present
+  loop: "{{ common_kernel_tuning | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: common_sysctl_tuning | bool
+  tags: [common, tuning]
+
+- name: Raise file descriptor and process limits for the service account
+  ansible.builtin.template:
+    src: limits.conf.j2
+    dest: /etc/security/limits.d/90-{{ platform_name }}.conf
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [common, tuning]
+
+- name: Create the platform directory skeleton
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ app_base_dir }}"
+    - "{{ app_base_dir }}/bin"
+    - "{{ app_base_dir }}/etc"
+  tags: [common, layout]
+
+- name: Install the operator MOTD banner
+  ansible.builtin.template:
+    src: motd.j2
+    dest: /etc/motd
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [common, motd]

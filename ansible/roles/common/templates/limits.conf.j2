@@ -1,0 +1,9 @@
+# {{ ansible_managed }}
+# A JVM under load runs out of file descriptors long before it runs out of heap.
+{{ app_user }}    soft    nofile    65536
+{{ app_user }}    hard    nofile    131072
+{{ app_user }}    soft    nproc     8192
+{{ app_user }}    hard    nproc     16384
+{{ app_user }}    soft    memlock   unlimited
+{{ app_user }}    hard    memlock   unlimited
+{{ app_user }}    hard    core      0
