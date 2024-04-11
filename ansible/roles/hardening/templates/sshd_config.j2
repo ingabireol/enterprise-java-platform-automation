@@ -1,0 +1,62 @@
+# {{ ansible_managed }}
+# Profile: {{ _profile_description }}
+# Validated with `sshd -t` before deployment; a broken template fails the play,
+# not the server.
+
+Port {{ ssh_port }}
+AddressFamily inet
+Protocol 2
+
+# --- Host keys -------------------------------------------------------------
+HostKey /etc/ssh/ssh_host_ed25519_key
+HostKey /etc/ssh/ssh_host_rsa_key
+
+# --- Cryptography ----------------------------------------------------------
+KexAlgorithms {{ ssh_kex_algorithms | join(',') }}
+Ciphers {{ ssh_ciphers | join(',') }}
+MACs {{ ssh_macs | join(',') }}
+HostKeyAlgorithms ssh-ed25519,rsa-sha2-512,rsa-sha2-256
+
+# --- Authentication --------------------------------------------------------
+PermitRootLogin {{ ssh_permit_root_login }}
+PasswordAuthentication {{ ssh_password_authentication }}
+PermitEmptyPasswords no
+ChallengeResponseAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+AuthenticationMethods publickey
+MaxAuthTries {{ ssh_max_auth_tries }}
+LoginGraceTime {{ ssh_login_grace_time }}
+MaxSessions {{ ssh_max_sessions }}
+MaxStartups 10:30:60
+StrictModes yes
+IgnoreRhosts yes
+HostbasedAuthentication no
+PermitUserEnvironment {{ ssh_permit_user_environment }}
+
+# --- Access control --------------------------------------------------------
+{% for grp in ssh_allow_groups %}
+AllowGroups {{ grp }}
+{% endfor %}
+DenyUsers root
+UseDNS {{ ssh_use_dns }}
+
+# --- Session behaviour -----------------------------------------------------
+ClientAliveInterval {{ ssh_client_alive_interval }}
+ClientAliveCountMax {{ ssh_client_alive_count_max }}
+TCPKeepAlive no
+AllowTcpForwarding {{ ssh_tcp_forwarding }}
+AllowAgentForwarding {{ ssh_agent_forwarding }}
+X11Forwarding {{ ssh_x11_forwarding }}
+PermitTunnel no
+GatewayPorts no
+Compression no
+
+# --- Logging ---------------------------------------------------------------
+SyslogFacility AUTHPRIV
+LogLevel VERBOSE
+PrintMotd yes
+PrintLastLog yes
+Banner /etc/issue.net
+
+Subsystem sftp /usr/libexec/openssh/sftp-server -f AUTHPRIV -l INFO

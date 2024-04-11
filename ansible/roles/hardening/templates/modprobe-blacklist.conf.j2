@@ -1,0 +1,7 @@
+# {{ ansible_managed }}
+# Filesystems and network protocols with no role on this platform. Removing the
+# attack surface is cheaper than monitoring it.
+{% for mod in hardening_blacklisted_modules %}
+install {{ mod }} /bin/false
+blacklist {{ mod }}
+{% endfor %}

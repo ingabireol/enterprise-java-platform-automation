@@ -1,0 +1,13 @@
+---
+# Development profile. Same controls, thresholds that do not get in the way of
+# a developer debugging a service on a shared box.
+_profile_description: "Baseline — development"
+ssh_max_sessions: 10
+ssh_tcp_forwarding: "yes"     # developers tunnel to the DB and actuator ports
+ssh_x11_forwarding: "no"
+ssh_agent_forwarding: "yes"
+ssh_permit_user_environment: "no"
+ssh_use_dns: "no"
+fail2ban_bantime: 600
+fail2ban_findtime: 600
+fail2ban_maxretry: 10

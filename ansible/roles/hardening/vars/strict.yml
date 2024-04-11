@@ -1,0 +1,13 @@
+---
+# Production / DR profile. Assumes access is via a jump host with key + MFA and
+# that no human logs in directly to an application node.
+_profile_description: "Strict — production and disaster recovery"
+ssh_max_sessions: 4
+ssh_tcp_forwarding: "no"
+ssh_x11_forwarding: "no"
+ssh_agent_forwarding: "no"
+ssh_permit_user_environment: "no"
+ssh_use_dns: "no"
+fail2ban_bantime: 3600
+fail2ban_findtime: 600
+fail2ban_maxretry: 3

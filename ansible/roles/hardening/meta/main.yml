@@ -1,0 +1,10 @@
+---
+galaxy_info:
+  role_name: hardening
+  author: Olivier Ingabire
+  description: >
+    CIS-aligned OS hardening baseline for RHEL/Rocky 9 and Ubuntu 22.04 hosts
+    carrying an internet-adjacent enterprise Java workload.
+  license: MIT
+  min_ansible_version: "2.15"
+dependencies: []

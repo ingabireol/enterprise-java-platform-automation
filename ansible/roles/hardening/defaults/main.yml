@@ -1,0 +1,96 @@
+---
+# Profile selects how aggressive the baseline is.
+#   baseline — safe for development; keeps interactive workflows comfortable
+#   strict   — production/DR; assumes all access is via jump host + key + MFA
+hardening_profile: strict
+
+# --- SSH -------------------------------------------------------------------
+ssh_port: 22
+ssh_permit_root_login: "no"
+ssh_password_authentication: "no"
+ssh_allow_groups: ["sysadmins"]
+ssh_client_alive_interval: 300
+ssh_client_alive_count_max: 2
+ssh_max_auth_tries: 3
+ssh_login_grace_time: 30
+ssh_kex_algorithms:
+  - curve25519-sha256
+  - curve25519-sha256@libssh.org
+  - diffie-hellman-group16-sha512
+  - diffie-hellman-group-exchange-sha256
+ssh_ciphers:
+  - chacha20-poly1305@openssh.com
+  - aes256-gcm@openssh.com
+  - aes128-gcm@openssh.com
+  - aes256-ctr
+ssh_macs:
+  - hmac-sha2-512-etm@openssh.com
+  - hmac-sha2-256-etm@openssh.com
+
+# --- Kernel modules that no application server here needs ------------------
+hardening_blacklisted_modules:
+  - cramfs
+  - freevxfs
+  - jffs2
+  - hfs
+  - hfsplus
+  - squashfs
+  - udf
+  - usb-storage
+  - dccp
+  - sctp
+  - rds
+  - tipc
+
+# --- Network stack ---------------------------------------------------------
+hardening_network_sysctl:
+  net.ipv4.ip_forward: 0
+  net.ipv4.conf.all.send_redirects: 0
+  net.ipv4.conf.default.send_redirects: 0
+  net.ipv4.conf.all.accept_redirects: 0
+  net.ipv4.conf.default.accept_redirects: 0
+  net.ipv4.conf.all.secure_redirects: 0
+  net.ipv4.conf.all.accept_source_route: 0
+  net.ipv4.conf.default.accept_source_route: 0
+  net.ipv4.conf.all.log_martians: 1
+  net.ipv4.conf.default.log_martians: 1
+  net.ipv4.icmp_echo_ignore_broadcasts: 1
+  net.ipv4.icmp_ignore_bogus_error_responses: 1
+  net.ipv4.conf.all.rp_filter: 1
+  net.ipv4.conf.default.rp_filter: 1
+  net.ipv4.tcp_syncookies: 1
+  net.ipv6.conf.all.accept_ra: 0
+  net.ipv6.conf.all.accept_redirects: 0
+  kernel.randomize_va_space: 2
+  kernel.dmesg_restrict: 1
+  kernel.kptr_restrict: 2
+  kernel.yama.ptrace_scope: 1
+  fs.suid_dumpable: 0
+  fs.protected_hardlinks: 1
+  fs.protected_symlinks: 1
+
+# --- Password and account policy ------------------------------------------
+password_max_age: 90
+password_min_age: 1
+password_warn_age: 14
+password_min_length: 14
+password_remember: 5
+inactive_lock_days: 35
+umask_default: "027"
+
+# --- Services that should not be running on an application host ------------
+hardening_disabled_services:
+  - avahi-daemon
+  - cups
+  - rpcbind
+  - nfs-server
+  - bluetooth
+  - telnet.socket
+
+# --- Toggles ---------------------------------------------------------------
+selinux_state: enforcing
+auditd_enabled: true
+fail2ban_enabled: true
+firewall_backend: nftables
+automatic_security_updates: false
+aide_enabled: true

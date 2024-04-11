@@ -1,0 +1,230 @@
+---
+# CIS-aligned hardening baseline.
+#
+# Two rules govern what is in here:
+#   1. Every control has to be re-runnable without breaking a live service.
+#   2. Every control that could lock an operator out is gated behind a validation
+#      step (sshd -t, visudo -c, nft -c) so that a bad template fails the play
+#      instead of the server.
+
+- name: Load profile-specific variables
+  ansible.builtin.include_vars: "{{ hardening_profile }}.yml"
+  tags: [always, hardening]
+
+# --------------------------------------------------------------------------
+# SSH
+# --------------------------------------------------------------------------
+- name: Deploy the hardened sshd configuration
+  ansible.builtin.template:
+    src: sshd_config.j2
+    dest: /etc/ssh/sshd_config
+    owner: root
+    group: root
+    mode: "0600"
+    backup: true
+    validate: "/usr/sbin/sshd -t -f %s"
+  notify: Restart sshd
+  tags: [hardening, ssh]
+
+- name: Restrict SSH host key permissions
+  ansible.builtin.file:
+    path: "{{ item }}"
+    owner: root
+    group: root
+    mode: "0600"
+  loop:
+    - /etc/ssh/ssh_host_rsa_key
+    - /etc/ssh/ssh_host_ecdsa_key
+    - /etc/ssh/ssh_host_ed25519_key
+  failed_when: false
+  tags: [hardening, ssh]
+
+- name: Install the pre-authentication legal banner
+  ansible.builtin.template:
+    src: issue.net.j2
+    dest: /etc/issue.net
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [hardening, ssh, banner]
+
+# --------------------------------------------------------------------------
+# Kernel, modules, network stack
+# --------------------------------------------------------------------------
+- name: Blacklist filesystem and protocol modules the platform does not use
+  ansible.builtin.template:
+    src: modprobe-blacklist.conf.j2
+    dest: /etc/modprobe.d/99-hardening.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Regenerate initramfs
+  when: ansible_os_family == "RedHat"
+  tags: [hardening, kernel]
+
+- name: Unload blacklisted modules that are currently loaded
+  community.general.modprobe:
+    name: "{{ item }}"
+    state: absent
+  loop: "{{ hardening_blacklisted_modules }}"
+  failed_when: false
+  tags: [hardening, kernel]
+
+- name: Apply network and kernel hardening sysctls
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/99-hardening.conf
+    state: present
+    reload: true
+  loop: "{{ hardening_network_sysctl | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  tags: [hardening, kernel, network]
+
+# --------------------------------------------------------------------------
+# Accounts and authentication
+# --------------------------------------------------------------------------
+- name: Enforce the password ageing policy in login.defs
+  ansible.builtin.lineinfile:
+    path: /etc/login.defs
+    regexp: "^#?{{ item.key }}\\s"
+    line: "{{ item.key }} {{ item.value }}"
+    state: present
+  loop:
+    - { key: PASS_MAX_DAYS, value: "{{ password_max_age }}" }
+    - { key: PASS_MIN_DAYS, value: "{{ password_min_age }}" }
+    - { key: PASS_WARN_AGE, value: "{{ password_warn_age }}" }
+    - { key: UMASK,         value: "{{ umask_default }}" }
+    - { key: ENCRYPT_METHOD, value: "SHA512" }
+    - { key: SHA_CRYPT_MIN_ROUNDS, value: "10000" }
+  loop_control:
+    label: "{{ item.key }}"
+  tags: [hardening, accounts]
+
+- name: Enforce password quality requirements
+  ansible.builtin.template:
+    src: pwquality.conf.j2
+    dest: /etc/security/pwquality.conf
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [hardening, accounts]
+
+- name: Lock accounts after a period of inactivity
+  ansible.builtin.command: "useradd -D -f {{ inactive_lock_days }}"
+  changed_when: false
+  tags: [hardening, accounts]
+
+- name: Find system accounts that should not have an interactive shell
+  ansible.builtin.shell: |
+    set -o pipefail
+    awk -F: '($3 < 1000) && ($1 != "root") && ($7 !~ /(nologin|false|sync|shutdown|halt)$/) {print $1}' /etc/passwd
+  register: _interactive_system_accounts
+  changed_when: false
+  check_mode: false
+  args:
+    executable: /bin/bash
+  tags: [hardening, accounts, audit]
+
+- name: Report system accounts with interactive shells
+  ansible.builtin.debug:
+    msg: >-
+      System accounts with an interactive shell on {{ inventory_hostname }}:
+      {{ _interactive_system_accounts.stdout_lines | join(', ') }}.
+      Review against docs/security/access-control.md before removing.
+  when: _interactive_system_accounts.stdout_lines | length > 0
+  tags: [hardening, accounts, audit]
+
+# --------------------------------------------------------------------------
+# Unnecessary services
+# --------------------------------------------------------------------------
+- name: Disable services that have no place on an application host
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+    masked: true
+  loop: "{{ hardening_disabled_services }}"
+  failed_when: false
+  tags: [hardening, services]
+
+# --------------------------------------------------------------------------
+# Mandatory access control
+# --------------------------------------------------------------------------
+- name: Set the SELinux state
+  ansible.posix.selinux:
+    policy: targeted
+    state: "{{ selinux_state }}"
+  when: ansible_os_family == "RedHat"
+  register: _selinux
+  tags: [hardening, selinux]
+
+- name: Warn when SELinux needs a reboot to take effect
+  ansible.builtin.debug:
+    msg: "SELinux state change is pending a reboot on {{ inventory_hostname }}."
+  when: _selinux.reboot_required | default(false)
+  tags: [hardening, selinux]
+
+# --------------------------------------------------------------------------
+# Sub-areas
+# --------------------------------------------------------------------------
+- name: Configure the host firewall
+  ansible.builtin.include_tasks: firewall.yml
+  tags: [hardening, firewall]
+
+- name: Configure audit logging
+  ansible.builtin.include_tasks: auditd.yml
+  when: auditd_enabled | bool
+  tags: [hardening, auditd]
+
+- name: Configure brute-force protection
+  ansible.builtin.include_tasks: fail2ban.yml
+  when: fail2ban_enabled | bool
+  tags: [hardening, fail2ban]
+
+- name: Configure file integrity monitoring
+  ansible.builtin.include_tasks: aide.yml
+  when: aide_enabled | bool
+  tags: [hardening, aide]
+
+# --------------------------------------------------------------------------
+# Filesystem permissions
+# --------------------------------------------------------------------------
+- name: Correct permissions on sensitive files
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    owner: "{{ item.owner | default('root') }}"
+    group: "{{ item.group | default('root') }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /etc/passwd,  mode: "0644" }
+    - { path: /etc/shadow,  mode: "0000" }
+    - { path: /etc/group,   mode: "0644" }
+    - { path: /etc/gshadow, mode: "0000" }
+    - { path: /etc/crontab, mode: "0600" }
+    - { path: /etc/ssh/sshd_config, mode: "0600" }
+    - { path: /boot/grub2/grub.cfg, mode: "0600" }
+  failed_when: false
+  tags: [hardening, permissions]
+
+- name: Restrict cron and at to administrators
+  ansible.builtin.copy:
+    content: "root\n"
+    dest: "{{ item }}"
+    owner: root
+    group: root
+    mode: "0600"
+  loop:
+    - /etc/cron.allow
+    - /etc/at.allow
+  tags: [hardening, permissions]
+
+- name: Remove cron/at deny files superseded by the allow lists
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/cron.deny
+    - /etc/at.deny
+  tags: [hardening, permissions]
