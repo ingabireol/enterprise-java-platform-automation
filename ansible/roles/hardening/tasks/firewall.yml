@@ -1,0 +1,34 @@
+---
+# Host firewall. The platform's north–south policy lives on the network devices
+# (see the enterprise-network-operations repository); this is the east–west
+# default-deny that assumes the network perimeter has already failed.
+
+- name: Install nftables
+  ansible.builtin.package:
+    name: nftables
+    state: present
+
+- name: Deploy the nftables ruleset
+  ansible.builtin.template:
+    src: nftables.conf.j2
+    dest: /etc/sysconfig/nftables.conf
+    owner: root
+    group: root
+    mode: "0600"
+    backup: true
+    validate: "nft -c -f %s"
+  notify: Reload nftables
+
+- name: Enable and start nftables
+  ansible.builtin.service:
+    name: nftables
+    state: started
+    enabled: true
+
+- name: Ensure firewalld is not fighting nftables for the same tables
+  ansible.builtin.systemd:
+    name: firewalld
+    state: stopped
+    enabled: false
+    masked: true
+  failed_when: false
