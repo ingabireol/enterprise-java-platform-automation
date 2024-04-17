@@ -1,0 +1,41 @@
+---
+# Audit rules exist to answer one question after an incident: who changed what,
+# when, and from where. They are scoped to that, not to logging everything.
+
+- name: Install audit tooling
+  ansible.builtin.package:
+    name: [audit, audit-libs]
+    state: present
+
+- name: Deploy platform audit rules
+  ansible.builtin.template:
+    src: audit.rules.j2
+    dest: /etc/audit/rules.d/99-platform.rules
+    owner: root
+    group: root
+    mode: "0600"
+  notify: Restart auditd
+
+- name: Configure auditd retention and disk-full behaviour
+  ansible.builtin.lineinfile:
+    path: /etc/audit/auditd.conf
+    regexp: "^{{ item.key }}\\s*="
+    line: "{{ item.key }} = {{ item.value }}"
+  loop:
+    - { key: max_log_file,        value: "64" }
+    - { key: num_logs,            value: "10" }
+    - { key: max_log_file_action, value: "rotate" }
+    - { key: space_left,          value: "512" }
+    - { key: space_left_action,   value: "email" }
+    - { key: admin_space_left_action, value: "halt" }
+    - { key: action_mail_acct,    value: "{{ alert_email }}" }
+    - { key: disk_full_action,    value: "halt" }
+  loop_control:
+    label: "{{ item.key }}"
+  notify: Restart auditd
+
+- name: Enable auditd
+  ansible.builtin.service:
+    name: auditd
+    state: started
+    enabled: true

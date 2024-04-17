@@ -1,0 +1,54 @@
+# {{ ansible_managed }}
+# Scope: who changed what, when, from where. Not a general-purpose event firehose.
+
+# Reset and set the backlog before anything else.
+-D
+-b 8192
+--backlog_wait_time 60000
+-f 1
+
+# --- Identity and authorisation changes ------------------------------------
+-w /etc/passwd  -p wa -k identity
+-w /etc/shadow  -p wa -k identity
+-w /etc/group   -p wa -k identity
+-w /etc/gshadow -p wa -k identity
+-w /etc/sudoers -p wa -k privilege
+-w /etc/sudoers.d/ -p wa -k privilege
+
+# --- Authentication events -------------------------------------------------
+-w /var/log/lastlog -p wa -k logins
+-w /var/run/faillock/ -p wa -k logins
+-w /etc/ssh/sshd_config -p wa -k sshd_config
+
+# --- Privilege escalation --------------------------------------------------
+-a always,exit -F arch=b64 -C euid!=uid -F euid=0 -F auid>=1000 -F auid!=4294967295 -S execve -k privilege_escalation
+
+# --- Platform configuration and binaries -----------------------------------
+-w {{ app_base_dir }}/etc/ -p wa -k platform_config
+-w {{ app_base_dir }}/bin/ -p wa -k platform_binaries
+-w /etc/systemd/system/ -p wa -k systemd_units
+
+# --- Time changes (transaction ordering depends on this) -------------------
+-a always,exit -F arch=b64 -S adjtimex,settimeofday,clock_settime -k time_change
+-w /etc/localtime -p wa -k time_change
+
+# --- Network configuration -------------------------------------------------
+-a always,exit -F arch=b64 -S sethostname,setdomainname -k network_config
+-w /etc/hosts -p wa -k network_config
+-w /etc/sysconfig/network-scripts/ -p wa -k network_config
+-w /etc/nftables.conf -p wa -k firewall_config
+
+# --- Kernel module activity ------------------------------------------------
+-a always,exit -F arch=b64 -S init_module,delete_module,finit_module -k modules
+
+# --- Failed access to sensitive paths --------------------------------------
+-a always,exit -F arch=b64 -S open,openat,truncate,ftruncate -F exit=-EACCES -F auid>=1000 -F auid!=4294967295 -k access_denied
+-a always,exit -F arch=b64 -S open,openat,truncate,ftruncate -F exit=-EPERM  -F auid>=1000 -F auid!=4294967295 -k access_denied
+
+{% if env_tier in ['prod', 'dr'] %}
+# Make the rule set immutable until reboot. Production only — a locked rule set
+# in development just wastes reboots.
+-e 2
+{% else %}
+-e 1
+{% endif %}
