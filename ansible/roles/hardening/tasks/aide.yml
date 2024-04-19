@@ -1,0 +1,36 @@
+---
+# File integrity monitoring. The database is initialised once and then compared
+# on a schedule; a diff is a signal to investigate, not an automatic alarm.
+
+- name: Install AIDE
+  ansible.builtin.package:
+    name: aide
+    state: present
+
+- name: Check whether the AIDE database already exists
+  ansible.builtin.stat:
+    path: /var/lib/aide/aide.db.gz
+  register: _aide_db
+
+- name: Initialise the AIDE database (first run only — this takes several minutes)
+  ansible.builtin.command: aide --init
+  args:
+    creates: /var/lib/aide/aide.db.new.gz
+  when: not _aide_db.stat.exists
+  async: 1800
+  poll: 30
+
+- name: Promote the freshly initialised AIDE database
+  ansible.builtin.command:
+    cmd: mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz
+    removes: /var/lib/aide/aide.db.new.gz
+  when: not _aide_db.stat.exists
+
+- name: Schedule the daily AIDE integrity check
+  ansible.builtin.cron:
+    name: "AIDE file integrity check"
+    minute: "30"
+    hour: "5"
+    user: root
+    job: "/usr/sbin/aide --check | /usr/bin/logger -t aide-check"
+    cron_file: platform-aide

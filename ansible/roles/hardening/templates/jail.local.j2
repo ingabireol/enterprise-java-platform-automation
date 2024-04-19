@@ -1,0 +1,29 @@
+# {{ ansible_managed }}
+[DEFAULT]
+bantime  = {{ fail2ban_bantime }}
+findtime = {{ fail2ban_findtime }}
+maxretry = {{ fail2ban_maxretry }}
+backend  = systemd
+banaction = nftables-multiport
+destemail = {{ alert_email }}
+sender = fail2ban@{{ inventory_hostname }}.{{ platform_domain }}
+action = %(action_mwl)s
+
+# Never lock out the management network or the monitoring server.
+ignoreip = 127.0.0.1/8 ::1 {{ prometheus_server }}/32 10.30.1.0/24
+
+[sshd]
+enabled = true
+port    = {{ ssh_port }}
+maxretry = {{ fail2ban_maxretry }}
+
+[nginx-http-auth]
+enabled = {{ 'true' if 'loadbalancers' in group_names else 'false' }}
+port    = http,https
+logpath = /var/log/nginx/error.log
+
+[nginx-limit-req]
+enabled = {{ 'true' if 'loadbalancers' in group_names else 'false' }}
+port    = http,https
+logpath = /var/log/nginx/error.log
+maxretry = 20
