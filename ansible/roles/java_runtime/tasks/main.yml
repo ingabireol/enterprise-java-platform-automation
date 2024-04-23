@@ -1,0 +1,99 @@
+---
+# JDK 21 installation and JVM-level defaults.
+#
+# The JVM is treated as part of the platform, not as a dependency that happens to
+# be present: its version is pinned, its trust store is managed, and its crypto
+# policy is set explicitly rather than inherited from whatever the base image had.
+
+- name: Install the JDK from the distribution repositories
+  ansible.builtin.package:
+    name: "temurin-{{ java_major_version }}-jdk"
+    state: present
+  when: java_install_method == 'package'
+  register: _jdk_pkg
+  failed_when:
+    - _jdk_pkg is failed
+    - "'No package' not in (_jdk_pkg.msg | default(''))"
+  tags: [java]
+
+- name: Install the JDK from a verified tarball
+  when: java_install_method == 'tarball' or (_jdk_pkg is defined and _jdk_pkg is failed)
+  tags: [java]
+  block:
+    - name: Create the JVM install root
+      ansible.builtin.file:
+        path: "{{ java_install_root }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Download and unpack the JDK tarball
+      ansible.builtin.unarchive:
+        src: "{{ java_tarball_url }}"
+        dest: "{{ java_install_root }}"
+        remote_src: true
+        checksum: "{{ java_tarball_checksum }}"
+        owner: root
+        group: root
+        creates: "{{ java_home }}/bin/java"
+        extra_opts: ["--strip-components=1", "--one-top-level={{ java_home | basename }}"]
+
+- name: Register the JDK with alternatives
+  community.general.alternatives:
+    name: "{{ item }}"
+    link: "/usr/bin/{{ item }}"
+    path: "{{ java_home }}/bin/{{ item }}"
+    priority: "{{ java_major_version * 100 }}"
+  loop: [java, javac, jar, jcmd, jstack, jmap, keytool]
+  when: java_set_default | bool
+  tags: [java, alternatives]
+
+- name: Export JAVA_HOME system-wide
+  ansible.builtin.copy:
+    content: |
+      # {{ ansible_managed }}
+      export JAVA_HOME={{ java_home }}
+      export PATH=$JAVA_HOME/bin:$PATH
+    dest: /etc/profile.d/java.sh
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [java]
+
+- name: Set the system-wide cryptographic policy
+  ansible.builtin.command: "update-crypto-policies --set {{ java_security_policy }}"
+  register: _cryptopol
+  changed_when: "'already' not in _cryptopol.stdout"
+  when: ansible_os_family == 'RedHat'
+  tags: [java, crypto]
+
+- name: Install additional CA certificates required by integration partners
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "/etc/pki/ca-trust/source/anchors/{{ item.name }}.crt"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ java_extra_ca_certs }}"
+  loop_control:
+    label: "{{ item.name }}"
+  notify: Rebuild the CA trust store
+  tags: [java, crypto]
+
+- name: Record the installed Java version as a host fact
+  ansible.builtin.command: "{{ java_home }}/bin/java -version"
+  register: _java_version
+  changed_when: false
+  check_mode: false
+  tags: [java, verify]
+
+- name: Assert that the expected major version is what is actually installed
+  ansible.builtin.assert:
+    that:
+      - "'\"' ~ java_major_version|string in _java_version.stderr or ' ' ~ java_major_version|string ~ '.' in _java_version.stderr"
+    fail_msg: >-
+      Expected JDK {{ java_major_version }} on {{ inventory_hostname }} but found:
+      {{ _java_version.stderr_lines | first | default('unknown') }}
+    success_msg: "JDK {{ java_major_version }} confirmed on {{ inventory_hostname }}."
+  tags: [java, verify]

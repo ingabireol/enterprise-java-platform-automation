@@ -1,0 +1,14 @@
+---
+java_major_version: 21
+java_vendor: temurin                       # temurin | oracle | corretto
+java_install_method: package               # package | tarball
+java_tarball_url: "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.5%2B11/OpenJDK21U-jdk_x64_linux_hotspot_21.0.5_11.tar.gz"
+java_tarball_checksum: "sha256:3c654d98404c073b8a7e66bffb27f4ae3e7ede47d13284c132d40a83144bfd8c"
+java_install_root: /usr/lib/jvm
+java_home: "{{ java_install_root }}/temurin-{{ java_major_version }}-jdk"
+java_set_default: true
+
+# Cryptography policy: the platform terminates TLS at Nginx but the JVM also
+# makes outbound TLS calls to integration partners, so its trust store matters.
+java_security_policy: DEFAULT:SHA1:NO
+java_extra_ca_certs: []                    # list of {name, src} PEM files to import
