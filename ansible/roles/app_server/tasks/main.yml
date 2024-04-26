@@ -1,0 +1,58 @@
+---
+- name: Create the application service account
+  ansible.builtin.user:
+    name: "{{ app_user }}"
+    group: "{{ app_group }}"
+    system: true
+    shell: /sbin/nologin
+    home: "{{ app_base_dir }}"
+    create_home: false
+    comment: "{{ platform_name | upper }} application service account"
+  tags: [app, accounts]
+
+- name: Create the application directory layout
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default(app_user) }}"
+    group: "{{ item.group | default(app_group) }}"
+    mode: "{{ item.mode | default('0750') }}"
+  loop:
+    - { path: "{{ app_base_dir }}/releases" }
+    - { path: "{{ app_base_dir }}/current" }
+    - { path: "{{ app_base_dir }}/etc", mode: "0750" }
+    - { path: "{{ app_base_dir }}/bin", owner: root, group: "{{ app_group }}", mode: "0750" }
+    - { path: "{{ app_data_dir }}" }
+    - { path: "{{ app_log_dir }}", mode: "0755" }
+    - { path: "{{ app_log_dir }}/heapdumps", mode: "0750" }
+    - { path: "{{ app_log_dir }}/gc", mode: "0750" }
+  tags: [app, layout]
+
+- name: Include the Spring Boot service tasks
+  ansible.builtin.include_tasks: spring.yml
+  when: "'appservers' in group_names"
+  tags: [app, spring]
+
+- name: Include the Tomcat/ZK tasks
+  ansible.builtin.include_tasks: tomcat.yml
+  when: "'tomcat_nodes' in group_names"
+  tags: [app, tomcat]
+
+- name: Install the log rotation policy for application logs
+  ansible.builtin.template:
+    src: logrotate-app.j2
+    dest: "/etc/logrotate.d/{{ platform_name }}"
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [app, logging]
+
+- name: Install the operator helper scripts
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ app_base_dir }}/bin/{{ item | basename }}"
+    owner: root
+    group: "{{ app_group }}"
+    mode: "0750"
+  with_fileglob: "../../../scripts/ops/*.sh"
+  tags: [app, tooling]

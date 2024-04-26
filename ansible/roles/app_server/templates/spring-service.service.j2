@@ -1,0 +1,66 @@
+# {{ ansible_managed }}
+[Unit]
+Description={{ platform_name | upper }} — {{ item.name }} ({{ env_tier }})
+Documentation=file://{{ app_base_dir }}/etc/{{ item.name }}.env
+After=network-online.target
+Wants=network-online.target
+{% if 'databases' in group_names %}
+After=postgresql-{{ postgresql_version }}.service
+{% endif %}
+
+[Service]
+Type=exec
+User={{ app_user }}
+Group={{ app_group }}
+WorkingDirectory={{ app_base_dir }}/current
+EnvironmentFile={{ app_base_dir }}/etc/{{ item.name }}.env
+
+ExecStart={{ java_home }}/bin/java $JAVA_OPTS -jar {{ app_base_dir }}/current/{{ item.name }}.jar
+ExecReload=/bin/kill -HUP $MAINPID
+
+# Graceful shutdown: Spring Boot drains in-flight requests on SIGTERM, so give
+# it the same grace period the load balancer uses when draining a node.
+KillSignal=SIGTERM
+TimeoutStopSec={{ spring_shutdown_grace }}
+KillMode=mixed
+SuccessExitStatus=143
+
+# Restart policy: recover from a crash, but stop flapping so that a genuinely
+# broken release surfaces as an alert instead of an endless restart loop.
+Restart=on-failure
+RestartSec={{ spring_restart_sec }}
+StartLimitIntervalSec={{ spring_start_limit_interval }}
+StartLimitBurst={{ spring_start_limit_burst }}
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=8192
+{% if env_tier in ['prod', 'dr'] %}
+MemoryMax={{ (item.heap | regex_replace('[gG]$', '') | int * 1.4) | round | int }}G
+MemoryHigh={{ (item.heap | regex_replace('[gG]$', '') | int * 1.25) | round | int }}G
+{% endif %}
+OOMPolicy=stop
+
+# Sandboxing — the service needs its own directories and nothing else.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+ReadWritePaths={{ app_log_dir }} {{ app_data_dir }} {{ app_base_dir }}/current
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+StandardOutput=append:{{ app_log_dir }}/{{ item.name }}-stdout.log
+StandardError=append:{{ app_log_dir }}/{{ item.name }}-stderr.log
+SyslogIdentifier={{ item.name }}
+
+[Install]
+WantedBy=multi-user.target

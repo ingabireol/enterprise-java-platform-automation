@@ -1,0 +1,77 @@
+# {{ ansible_managed }}
+# Environment-specific overlay for {{ item.name }}. The application ships sane
+# defaults; only the values that genuinely differ per environment belong here.
+spring:
+  application:
+    name: {{ item.name }}
+  datasource:
+    url: "jdbc:postgresql://{{ hostvars[groups['db_primary'][0]].ansible_host | default('127.0.0.1') }}:{{ postgresql_port }}/{{ platform_name }}?ApplicationName={{ item.name }}&sslmode=require"
+    username: "{{ platform_name }}_app"
+    password: "${DB_PASSWORD}"
+    hikari:
+      # Pool sizing: total connections across all app nodes must stay under
+      # postgresql_max_connections ({{ postgresql_max_connections }}) with headroom
+      # for maintenance sessions and the replica.
+      maximum-pool-size: {{ [(postgresql_max_connections | int * 0.7 / ((groups['appservers'] | length) * (spring_services | length))) | round | int, 5] | max }}
+      minimum-idle: 2
+      connection-timeout: 10000
+      idle-timeout: 300000
+      max-lifetime: 1500000
+      leak-detection-threshold: 60000
+      validation-timeout: 3000
+  jpa:
+    open-in-view: false
+    properties:
+      hibernate.jdbc.batch_size: 50
+      hibernate.order_inserts: true
+  lifecycle:
+    timeout-per-shutdown-phase: {{ spring_shutdown_grace - 10 }}s
+
+server:
+  port: {{ item.port }}
+  shutdown: graceful
+  tomcat:
+    threads:
+      max: {{ 200 if env_tier in ['prod','dr'] else 50 }}
+    accept-count: 100
+    connection-timeout: 20s
+  forward-headers-strategy: native       # behind the Nginx reverse proxy
+  error:
+    include-stacktrace: never
+    include-message: {{ 'always' if env_tier == 'dev' else 'never' }}
+
+management:
+  server:
+    port: {{ item.management_port }}
+    address: 127.0.0.1
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus{% if env_tier == 'dev' %},env,loggers,threaddump,heapdump{% endif %}
+
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: when-authorized
+      group:
+        readiness:
+          include: db,diskSpace,ping
+        liveness:
+          include: ping
+  metrics:
+    tags:
+      application: {{ item.name }}
+      environment: {{ env_tier }}
+      instance: {{ inventory_hostname }}
+      site: {{ site_name }}
+
+logging:
+  file:
+    name: {{ app_log_dir }}/{{ item.name }}.log
+  level:
+    root: {{ 'DEBUG' if env_tier == 'dev' else 'INFO' }}
+    org.hibernate.SQL: {{ 'DEBUG' if env_tier == 'dev' else 'WARN' }}
+  pattern:
+    # Structured enough for promtail to parse into Loki labels.
+    file: "%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%thread] [%X{traceId:-}] %logger{40} - %msg%n"

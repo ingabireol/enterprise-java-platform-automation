@@ -1,0 +1,70 @@
+---
+# One systemd unit per Spring Boot service. The units carry the operational
+# policy — restart behaviour, resource limits, sandboxing — so that the
+# application JAR stays a plain artefact with no host-specific knowledge in it.
+
+- name: Render the environment file for each service
+  ansible.builtin.template:
+    src: spring-service.env.j2
+    dest: "{{ app_base_dir }}/etc/{{ item.name }}.env"
+    owner: root
+    group: "{{ app_group }}"
+    mode: "0640"
+  loop: "{{ spring_services }}"
+  loop_control:
+    label: "{{ item.name }}"
+  notify: Restart spring services
+
+- name: Render the application configuration for each service
+  ansible.builtin.template:
+    src: application-env.yml.j2
+    dest: "{{ app_base_dir }}/etc/{{ item.name }}-application.yml"
+    owner: root
+    group: "{{ app_group }}"
+    mode: "0640"
+  loop: "{{ spring_services }}"
+  loop_control:
+    label: "{{ item.name }}"
+  notify: Restart spring services
+
+- name: Install the systemd unit for each service
+  ansible.builtin.template:
+    src: spring-service.service.j2
+    dest: "/etc/systemd/system/{{ item.name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ spring_services }}"
+  loop_control:
+    label: "{{ item.name }}"
+  notify:
+    - Reload systemd
+    - Restart spring services
+
+- name: Flush handlers so units exist before we try to enable them
+  ansible.builtin.meta: flush_handlers
+
+- name: Set the desired state of each service
+  ansible.builtin.systemd:
+    name: "{{ item.name }}.service"
+    enabled: "{{ app_services_enabled | bool }}"
+    state: "{{ 'started' if app_services_started | bool else 'stopped' }}"
+    daemon_reload: true
+  loop: "{{ spring_services }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Wait for each service to report readiness
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ item.management_port }}{{ app_health_path }}"
+    status_code: 200
+    return_content: true
+  register: _health
+  until: _health.status == 200 and (_health.json.status | default('')) == 'UP'
+  retries: "{{ (app_health_timeout / 10) | int }}"
+  delay: 10
+  loop: "{{ spring_services }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: app_services_started | bool
+  changed_when: false

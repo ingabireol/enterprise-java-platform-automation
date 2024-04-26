@@ -1,0 +1,24 @@
+---
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Restart spring services
+  ansible.builtin.systemd:
+    name: "{{ item.name }}.service"
+    state: restarted
+  loop: "{{ spring_services }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: app_services_started | bool
+
+- name: Restart tomcat
+  ansible.builtin.systemd:
+    name: tomcat
+    state: restarted
+  when: app_services_started | bool
+
+- name: Restart logrotate timer
+  ansible.builtin.systemd:
+    name: logrotate.timer
+    state: restarted

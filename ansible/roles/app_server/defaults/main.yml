@@ -1,0 +1,34 @@
+---
+# Spring Boot services run as systemd units, one unit per service.
+# The ZK 10 UI runs as a WAR inside Tomcat 10.1 on dedicated nodes.
+
+app_services_started: true
+app_services_enabled: true
+
+spring_profile: prod
+spring_services: []
+spring_shutdown_grace: 60                 # seconds systemd waits for graceful drain
+spring_restart_sec: 15
+spring_start_limit_burst: 3
+spring_start_limit_interval: 300
+
+app_artifact_repo: "https://artifacts.example.gov/repository/releases"
+app_version: "latest"
+app_releases_keep: 5                      # how many previous releases stay on disk
+
+tomcat_version: "10.1.34"
+tomcat_user: tomcat
+tomcat_group: tomcat
+tomcat_base: /opt/tomcat
+tomcat_http_port: 8080
+tomcat_shutdown_port: 8005
+tomcat_max_threads: 200
+tomcat_min_spare_threads: 25
+tomcat_accept_count: 200
+tomcat_connection_timeout: 20000
+tomcat_context: /efp-ui
+tomcat_download_url: "https://archive.apache.org/dist/tomcat/tomcat-10/v{{ tomcat_version }}/bin/apache-tomcat-{{ tomcat_version }}.tar.gz"
+
+# The health endpoint every deployment and every load balancer check agrees on.
+app_health_path: /actuator/health/readiness
+app_health_timeout: 180

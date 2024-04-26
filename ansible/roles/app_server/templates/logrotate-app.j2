@@ -1,0 +1,17 @@
+# {{ ansible_managed }}
+{{ app_log_dir }}/*.log {{ app_log_dir }}/gc/*.log {{ tomcat_base }}/logs/*.log {
+    daily
+    rotate {{ 30 if env_tier in ['prod','dr'] else 7 }}
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    su {{ app_user }} {{ app_group }}
+    create 0640 {{ app_user }} {{ app_group }}
+    dateext
+    dateformat -%Y%m%d
+    maxsize 200M
+    # Logs are also shipped to Loki by promtail; rotation here only bounds local
+    # disk, so copytruncate is acceptable and avoids signalling the JVM.
+}
