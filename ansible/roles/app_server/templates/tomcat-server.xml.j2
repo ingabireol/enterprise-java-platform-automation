@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- {{ ansible_managed }}
+     Tomcat {{ tomcat_version }} for the ZK 10 UI tier on {{ inventory_hostname }}.
+     Notable choices:
+       * Shutdown port disabled (-1) — nothing should be able to stop this JVM
+         by writing a string to a TCP socket.
+       * TLS terminates at Nginx; this connector is plain HTTP bound to the
+         internal interface only, with proxy awareness so the app sees the real
+         scheme and client address.
+       * Server/version banners suppressed.
+-->
+<Server port="-1" shutdown="DISABLED">
+
+  <Listener className="org.apache.catalina.startup.VersionLoggerListener" />
+  <Listener className="org.apache.catalina.security.SecurityListener" />
+  <Listener className="org.apache.catalina.core.AprLifecycleListener" SSLEngine="on" />
+  <Listener className="org.apache.catalina.core.JreMemoryLeakPreventionListener" />
+  <Listener className="org.apache.catalina.mbeans.GlobalResourcesLifecycleListener" />
+  <Listener className="org.apache.catalina.core.ThreadLocalLeakPreventionListener" />
+
+  <GlobalNamingResources>
+    <Resource name="jdbc/{{ platform_name }}"
+              auth="Container"
+              type="javax.sql.DataSource"
+              driverClassName="org.postgresql.Driver"
+              url="jdbc:postgresql://{{ hostvars[groups['db_primary'][0]].ansible_host | default('127.0.0.1') }}:{{ postgresql_port }}/{{ platform_name }}?sslmode=require"
+              username="{{ platform_name }}_app"
+              password="{{ vault_postgresql_app_password | default('changeme') }}"
+              maxTotal="{{ tomcat_max_threads // 4 }}"
+              maxIdle="10"
+              minIdle="2"
+              maxWaitMillis="10000"
+              validationQuery="SELECT 1"
+              testOnBorrow="true"
+              removeAbandonedOnBorrow="true"
+              removeAbandonedTimeout="300" />
+  </GlobalNamingResources>
+
+  <Service name="Catalina">
+
+    <Executor name="tomcatThreadPool"
+              namePrefix="catalina-exec-"
+              maxThreads="{{ tomcat_max_threads }}"
+              minSpareThreads="{{ tomcat_min_spare_threads }}"
+              maxIdleTime="60000"
+              maxQueueSize="{{ tomcat_accept_count }}" />
+
+    <Connector port="{{ tomcat_http_port }}"
+               address="{{ ansible_host | default('0.0.0.0') }}"
+               protocol="org.apache.coyote.http11.Http11Nio2Protocol"
+               executor="tomcatThreadPool"
+               connectionTimeout="{{ tomcat_connection_timeout }}"
+               acceptCount="{{ tomcat_accept_count }}"
+               maxHttpHeaderSize="16384"
+               maxPostSize="67108864"
+               compression="on"
+               compressibleMimeType="text/html,text/xml,text/plain,text/css,text/javascript,application/javascript,application/json"
+               URIEncoding="UTF-8"
+               enableLookups="false"
+               server=" "
+               xpoweredBy="false"
+               secure="true"
+               scheme="https"
+               proxyPort="443" />
+
+    <Engine name="Catalina" defaultHost="localhost">
+
+      <Valve className="org.apache.catalina.valves.RemoteIpValve"
+             remoteIpHeader="X-Forwarded-For"
+             protocolHeader="X-Forwarded-Proto"
+             internalProxies="{% for h in groups['loadbalancers'] | default([]) %}{{ hostvars[h].ansible_host | regex_replace('\.', '\\.') }}{% if not loop.last %}|{% endif %}{% endfor %}" />
+
+      <Realm className="org.apache.catalina.realm.LockOutRealm"
+             failureCount="5" lockOutTime="600">
+        <Realm className="org.apache.catalina.realm.NullRealm" />
+      </Realm>
+
+      <Host name="localhost"
+            appBase="webapps"
+            unpackWARs="true"
+            autoDeploy="false"
+            deployOnStartup="true"
+            deployXML="false">
+
+        <Valve className="org.apache.catalina.valves.AccessLogValve"
+               directory="{{ app_log_dir }}"
+               prefix="tomcat-access"
+               suffix=".log"
+               rotatable="true"
+               fileDateFormat=".yyyy-MM-dd"
+               pattern="%{X-Forwarded-For}i %l %u %t &quot;%r&quot; %s %b %D &quot;%{Referer}i&quot; &quot;%{User-Agent}i&quot;"
+               requestAttributesEnabled="true" />
+
+        <Valve className="org.apache.catalina.valves.ErrorReportValve"
+               showReport="false"
+               showServerInfo="false" />
+      </Host>
+    </Engine>
+  </Service>
+</Server>

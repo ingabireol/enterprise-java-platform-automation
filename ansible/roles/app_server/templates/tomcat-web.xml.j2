@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- {{ ansible_managed }}
+     Container-wide defaults. Security headers are also set at Nginx; setting
+     them here too means a direct hit to the connector (a misrouted internal
+     request, a debugging session) is not weaker than a proxied one. -->
+<web-app xmlns="https://jakarta.ee/xml/ns/jakartaee"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="https://jakarta.ee/xml/ns/jakartaee https://jakarta.ee/xml/ns/jakartaee/web-app_6_0.xsd"
+         version="6.0">
+
+  <filter>
+    <filter-name>httpHeaderSecurity</filter-name>
+    <filter-class>org.apache.catalina.filters.HttpHeaderSecurityFilter</filter-class>
+    <init-param>
+      <param-name>hstsEnabled</param-name>
+      <param-value>true</param-value>
+    </init-param>
+    <init-param>
+      <param-name>hstsMaxAgeSeconds</param-name>
+      <param-value>{{ nginx_hsts_max_age }}</param-value>
+    </init-param>
+    <init-param>
+      <param-name>antiClickJackingOption</param-name>
+      <param-value>SAMEORIGIN</param-value>
+    </init-param>
+    <async-supported>true</async-supported>
+  </filter>
+  <filter-mapping>
+    <filter-name>httpHeaderSecurity</filter-name>
+    <url-pattern>/*</url-pattern>
+  </filter-mapping>
+
+  <session-config>
+    <session-timeout>{{ 30 if env_tier in ['prod','dr'] else 120 }}</session-timeout>
+    <cookie-config>
+      <http-only>true</http-only>
+      <secure>true</secure>
+    </cookie-config>
+    <tracking-mode>COOKIE</tracking-mode>
+  </session-config>
+
+  <!-- Refuse the HTTP verbs the application has no use for. -->
+  <security-constraint>
+    <web-resource-collection>
+      <web-resource-name>Disallowed methods</web-resource-name>
+      <url-pattern>/*</url-pattern>
+      <http-method>PUT</http-method>
+      <http-method>DELETE</http-method>
+      <http-method>TRACE</http-method>
+      <http-method>OPTIONS</http-method>
+    </web-resource-collection>
+    <auth-constraint />
+  </security-constraint>
+
+  <welcome-file-list>
+    <welcome-file>index.zul</welcome-file>
+  </welcome-file-list>
+</web-app>

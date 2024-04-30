@@ -1,0 +1,94 @@
+---
+# Tomcat 10.1 hosting the ZK 10 web application.
+# Installed from the upstream tarball with a pinned version, never "latest" —
+# an application server that silently changes version between environments is a
+# migration failure waiting for a deadline.
+
+- name: Create the Tomcat service account
+  ansible.builtin.user:
+    name: "{{ tomcat_user }}"
+    group: "{{ tomcat_group }}"
+    system: true
+    shell: /sbin/nologin
+    home: "{{ tomcat_base }}"
+    create_home: false
+
+- name: Create the Tomcat directory layout
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ tomcat_user }}"
+    group: "{{ tomcat_group }}"
+    mode: "0750"
+  loop:
+    - "{{ tomcat_base }}"
+    - "{{ tomcat_base }}/conf"
+    - "{{ tomcat_base }}/webapps"
+    - "{{ tomcat_base }}/logs"
+    - "{{ tomcat_base }}/temp"
+    - "{{ tomcat_base }}/work"
+
+- name: Download and unpack Tomcat {{ tomcat_version }}
+  ansible.builtin.unarchive:
+    src: "{{ tomcat_download_url }}"
+    dest: "{{ tomcat_base }}"
+    remote_src: true
+    owner: "{{ tomcat_user }}"
+    group: "{{ tomcat_group }}"
+    extra_opts: ["--strip-components=1"]
+    creates: "{{ tomcat_base }}/bin/catalina.sh"
+
+- name: Remove the sample and management applications shipped with Tomcat
+  ansible.builtin.file:
+    path: "{{ tomcat_base }}/webapps/{{ item }}"
+    state: absent
+  loop: [examples, docs, ROOT, host-manager, manager]
+  notify: Restart tomcat
+
+- name: Deploy server.xml
+  ansible.builtin.template:
+    src: tomcat-server.xml.j2
+    dest: "{{ tomcat_base }}/conf/server.xml"
+    owner: "{{ tomcat_user }}"
+    group: "{{ tomcat_group }}"
+    mode: "0600"
+    backup: true
+  notify: Restart tomcat
+
+- name: Deploy the Tomcat security policy and context defaults
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ tomcat_base }}/conf/{{ item.dest }}"
+    owner: "{{ tomcat_user }}"
+    group: "{{ tomcat_group }}"
+    mode: "0600"
+  loop:
+    - { src: tomcat-context.xml.j2, dest: context.xml }
+    - { src: tomcat-web.xml.j2, dest: web.xml }
+  notify: Restart tomcat
+
+- name: Install the Tomcat systemd unit
+  ansible.builtin.template:
+    src: tomcat.service.j2
+    dest: /etc/systemd/system/tomcat.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart tomcat
+
+- name: Set the desired state of Tomcat
+  ansible.builtin.systemd:
+    name: tomcat
+    enabled: "{{ app_services_enabled | bool }}"
+    state: "{{ 'started' if app_services_started | bool else 'stopped' }}"
+    daemon_reload: true
+
+- name: Wait for the Tomcat connector to accept connections
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ tomcat_http_port }}"
+    timeout: "{{ app_health_timeout }}"
+    state: started
+  when: app_services_started | bool

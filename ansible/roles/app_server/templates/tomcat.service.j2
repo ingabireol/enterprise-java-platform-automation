@@ -1,0 +1,38 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Apache Tomcat {{ tomcat_version }} — {{ platform_name | upper }} ZK UI tier
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User={{ tomcat_user }}
+Group={{ tomcat_group }}
+
+Environment="JAVA_HOME={{ java_home }}"
+Environment="CATALINA_HOME={{ tomcat_base }}"
+Environment="CATALINA_BASE={{ tomcat_base }}"
+Environment="CATALINA_PID={{ tomcat_base }}/temp/tomcat.pid"
+Environment="CATALINA_OPTS=-Xms{{ jvm_heap_min }} -Xmx{{ jvm_heap_max }} -XX:+Use{{ jvm_gc }}GC {{ jvm_extra_opts | join(' ') }} -Dzk.env={{ env_tier }} -Xlog:gc*:file={{ app_log_dir }}/gc/tomcat-gc.log:time,uptime,level,tags:filecount=5,filesize=20M"
+
+ExecStart={{ tomcat_base }}/bin/catalina.sh run
+ExecStop={{ tomcat_base }}/bin/catalina.sh stop 30 -force
+
+KillSignal=SIGTERM
+TimeoutStopSec=90
+Restart=on-failure
+RestartSec=20
+StartLimitBurst=3
+StartLimitIntervalSec=300
+
+LimitNOFILE=65536
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths={{ tomcat_base }} {{ app_log_dir }}
+
+SyslogIdentifier=tomcat
+
+[Install]
+WantedBy=multi-user.target
