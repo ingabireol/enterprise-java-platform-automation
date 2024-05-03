@@ -1,0 +1,41 @@
+---
+postgresql_version: 16
+postgresql_port: 5432
+postgresql_data_dir: "/var/lib/pgsql/{{ postgresql_version }}/data"
+postgresql_role: primary                    # primary | replica
+
+postgresql_max_connections: 200
+postgresql_shared_buffers: 4GB
+postgresql_effective_cache_size: 12GB
+postgresql_work_mem: 8MB
+postgresql_maintenance_work_mem: 512MB
+postgresql_wal_buffers: 16MB
+postgresql_checkpoint_timeout: 15min
+postgresql_checkpoint_completion_target: 0.9
+postgresql_max_wal_size: 8GB
+postgresql_min_wal_size: 2GB
+postgresql_random_page_cost: 1.1            # assumes SSD-backed storage
+postgresql_effective_io_concurrency: 200
+
+postgresql_wal_level: replica
+postgresql_archive_mode: "on"
+postgresql_archive_dir: "/var/lib/pgsql/wal_archive"
+postgresql_archive_timeout: 300             # bounds RPO when write volume is low
+postgresql_max_wal_senders: 10
+postgresql_wal_keep_size: 4GB
+postgresql_hot_standby: "on"
+
+postgresql_replication_user: replicator
+postgresql_primary_host: ""
+
+postgresql_log_min_duration_statement: 1000 # log anything slower than 1s
+postgresql_log_line_prefix: "%m [%p] %q%u@%d/%a from %h "
+
+postgresql_ssl: true
+postgresql_databases:
+  - name: "{{ platform_name }}"
+    owner: "{{ platform_name }}_app"
+    encoding: UTF8
+postgresql_users:
+  - { name: "{{ platform_name }}_app", password_var: vault_postgresql_app_password, role_attr_flags: "NOSUPERUSER,NOCREATEDB" }
+  - { name: "{{ platform_name }}_ro",  password_var: vault_postgresql_readonly_password, role_attr_flags: "NOSUPERUSER,NOCREATEDB" }

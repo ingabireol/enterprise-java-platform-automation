@@ -1,0 +1,51 @@
+# {{ ansible_managed }}
+# Client authentication for {{ inventory_hostname }} ({{ postgresql_role }}).
+#
+# Order matters: the first matching line wins. Local socket access for
+# administration, TLS-only scram-sha-256 for everything over the network, and
+# no catch-all "host all all 0.0.0.0/0" line anywhere.
+
+# TYPE   DATABASE        USER                    ADDRESS              METHOD
+
+# --- Local administration --------------------------------------------------
+local    all             postgres                                     peer
+local    all             all                                          scram-sha-256
+
+# --- Application tier ------------------------------------------------------
+{% for h in groups['appservers'] | default([]) + groups['tomcat_nodes'] | default([]) %}
+hostssl  {{ platform_name }}    {{ platform_name }}_app   {{ hostvars[h].ansible_host }}/32    scram-sha-256
+{% endfor %}
+
+# --- Read-only reporting access -------------------------------------------
+{% for h in groups['appservers'] | default([]) %}
+hostssl  {{ platform_name }}    {{ platform_name }}_ro    {{ hostvars[h].ansible_host }}/32    scram-sha-256
+{% endfor %}
+
+# --- Streaming replication -------------------------------------------------
+{% for h in groups['databases'] | default([]) if h != inventory_hostname %}
+hostssl  replication     {{ postgresql_replication_user }}  {{ hostvars[h].ansible_host }}/32  scram-sha-256
+{% endfor %}
+{% if env_tier == 'prod' %}
+# DR site replica
+hostssl  replication     {{ postgresql_replication_user }}  10.40.30.11/32                     scram-sha-256
+{% endif %}
+
+# --- Backup agent ----------------------------------------------------------
+{% for h in groups['backup'] | default([]) %}
+hostssl  all             postgres                 {{ hostvars[h].ansible_host }}/32            scram-sha-256
+hostssl  replication     {{ postgresql_replication_user }}  {{ hostvars[h].ansible_host }}/32  scram-sha-256
+{% endfor %}
+
+# --- Monitoring ------------------------------------------------------------
+host     postgres        pg_exporter              127.0.0.1/32                                 scram-sha-256
+
+# --- Database administrators (jump host only) ------------------------------
+{% if env_tier in ['prod', 'dr'] %}
+hostssl  all             all                      10.{{ 30 if env_tier == 'prod' else 40 }}.1.0/24   scram-sha-256
+{% endif %}
+
+# --- Default deny ----------------------------------------------------------
+# Anything not matched above is rejected with an explicit message rather than a
+# timeout, so misconfiguration is diagnosable.
+host     all             all                      0.0.0.0/0                                    reject
+host     all             all                      ::/0                                         reject

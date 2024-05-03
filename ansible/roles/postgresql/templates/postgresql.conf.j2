@@ -1,0 +1,111 @@
+# {{ ansible_managed }}
+# PostgreSQL {{ postgresql_version }} — {{ inventory_hostname }} ({{ postgresql_role }}, {{ env_tier }})
+
+# --- Connections -----------------------------------------------------------
+listen_addresses = '{{ ansible_host }},127.0.0.1'
+port = {{ postgresql_port }}
+max_connections = {{ postgresql_max_connections }}
+superuser_reserved_connections = 5
+tcp_keepalives_idle = 300
+tcp_keepalives_interval = 30
+tcp_keepalives_count = 3
+
+# --- TLS -------------------------------------------------------------------
+{% if postgresql_ssl %}
+ssl = on
+ssl_cert_file = 'server.crt'
+ssl_key_file = 'server.key'
+ssl_min_protocol_version = 'TLSv1.2'
+ssl_prefer_server_ciphers = on
+{% else %}
+ssl = off
+{% endif %}
+
+# --- Memory ----------------------------------------------------------------
+# shared_buffers ≈ 25% of RAM; effective_cache_size ≈ 75%. work_mem is per sort
+# node, so it is multiplied by concurrency — kept deliberately modest.
+shared_buffers = {{ postgresql_shared_buffers }}
+effective_cache_size = {{ postgresql_effective_cache_size }}
+work_mem = {{ postgresql_work_mem }}
+maintenance_work_mem = {{ postgresql_maintenance_work_mem }}
+huge_pages = try
+
+# --- Write-ahead log and checkpoints ---------------------------------------
+wal_level = {{ postgresql_wal_level }}
+wal_buffers = {{ postgresql_wal_buffers }}
+wal_compression = on
+max_wal_size = {{ postgresql_max_wal_size }}
+min_wal_size = {{ postgresql_min_wal_size }}
+checkpoint_timeout = {{ postgresql_checkpoint_timeout }}
+checkpoint_completion_target = {{ postgresql_checkpoint_completion_target }}
+checkpoint_warning = 30s
+
+# --- Archiving (the foundation of point-in-time recovery) ------------------
+archive_mode = {{ postgresql_archive_mode }}
+{% if postgresql_archive_mode == 'on' %}
+# %p = path to the WAL segment, %f = its filename. The test guard prevents an
+# archive command from silently overwriting an existing segment.
+archive_command = 'test ! -f {{ postgresql_archive_dir }}/%f && gzip -c %p > {{ postgresql_archive_dir }}/%f.gz'
+archive_timeout = {{ postgresql_archive_timeout }}
+{% endif %}
+
+# --- Replication -----------------------------------------------------------
+max_wal_senders = {{ postgresql_max_wal_senders }}
+wal_keep_size = {{ postgresql_wal_keep_size }}
+max_replication_slots = {{ postgresql_max_wal_senders }}
+hot_standby = {{ postgresql_hot_standby }}
+hot_standby_feedback = on
+{% if postgresql_role == 'replica' and postgresql_primary_host %}
+primary_conninfo = 'host={{ postgresql_primary_host }} port={{ postgresql_port }} user={{ postgresql_replication_user }} application_name={{ inventory_hostname }} sslmode=require'
+primary_slot_name = 'slot_{{ inventory_hostname | replace("-", "_") }}'
+restore_command = 'gunzip -c {{ postgresql_archive_dir }}/%f.gz > %p'
+{% endif %}
+
+# --- Query planner ---------------------------------------------------------
+random_page_cost = {{ postgresql_random_page_cost }}
+effective_io_concurrency = {{ postgresql_effective_io_concurrency }}
+default_statistics_target = 200
+
+# --- Autovacuum ------------------------------------------------------------
+# A financial schema with heavy update traffic needs autovacuum to keep up;
+# the defaults are tuned for a much smaller workload.
+autovacuum = on
+autovacuum_max_workers = 5
+autovacuum_naptime = 30s
+autovacuum_vacuum_scale_factor = 0.05
+autovacuum_analyze_scale_factor = 0.02
+autovacuum_vacuum_cost_limit = 2000
+
+# --- Logging ---------------------------------------------------------------
+logging_collector = on
+log_directory = 'log'
+log_filename = 'postgresql-%Y-%m-%d.log'
+log_rotation_age = 1d
+log_rotation_size = 200MB
+log_truncate_on_rotation = on
+log_line_prefix = '{{ postgresql_log_line_prefix }}'
+log_min_duration_statement = {{ postgresql_log_min_duration_statement }}
+log_checkpoints = on
+log_connections = {{ 'on' if env_tier in ['prod','dr'] else 'off' }}
+log_disconnections = {{ 'on' if env_tier in ['prod','dr'] else 'off' }}
+log_lock_waits = on
+log_temp_files = 10MB
+log_autovacuum_min_duration = 1000
+log_statement = 'ddl'
+log_timezone = '{{ timezone }}'
+
+# --- Statement statistics --------------------------------------------------
+shared_preload_libraries = 'pg_stat_statements'
+pg_stat_statements.max = 10000
+pg_stat_statements.track = top
+
+# --- Statement and lock timeouts -------------------------------------------
+# A runaway report should fail, not hold locks until the platform stalls.
+statement_timeout = {{ '0' if postgresql_role == 'replica' else '300s' }}
+lock_timeout = 30s
+idle_in_transaction_session_timeout = 300s
+
+datestyle = 'iso, mdy'
+timezone = '{{ timezone }}'
+lc_messages = 'en_US.UTF-8'
+default_text_search_config = 'pg_catalog.english'

@@ -1,0 +1,75 @@
+---
+# Roles, databases and the extensions the platform depends on.
+# Privileges follow least-privilege: the application role owns its schema but
+# holds no superuser rights, and the read-only role exists so that reporting and
+# ad-hoc analysis never need application credentials.
+
+- name: Create the replication role
+  community.postgresql.postgresql_user:
+    name: "{{ postgresql_replication_user }}"
+    password: "{{ vault_postgresql_replication_password }}"
+    role_attr_flags: REPLICATION,LOGIN,NOSUPERUSER,NOCREATEDB
+    state: present
+  become_user: postgres
+  no_log: true
+
+- name: Create application roles
+  community.postgresql.postgresql_user:
+    name: "{{ item.name }}"
+    password: "{{ lookup('vars', item.password_var, default=omit) }}"
+    role_attr_flags: "{{ item.role_attr_flags }},LOGIN"
+    state: present
+  become_user: postgres
+  loop: "{{ postgresql_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+- name: Create databases
+  community.postgresql.postgresql_db:
+    name: "{{ item.name }}"
+    owner: "{{ item.owner }}"
+    encoding: "{{ item.encoding | default('UTF8') }}"
+    lc_collate: en_US.UTF-8
+    lc_ctype: en_US.UTF-8
+    template: template0
+    state: present
+  become_user: postgres
+  loop: "{{ postgresql_databases }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Enable extensions used by the platform and by monitoring
+  community.postgresql.postgresql_ext:
+    name: "{{ item.1 }}"
+    db: "{{ item.0.name }}"
+    state: present
+  become_user: postgres
+  loop: "{{ postgresql_databases | product(['pg_stat_statements', 'pgcrypto', 'uuid-ossp']) | list }}"
+  loop_control:
+    label: "{{ item.0.name }}/{{ item.1 }}"
+
+- name: Grant the read-only role select on all current and future tables
+  community.postgresql.postgresql_query:
+    db: "{{ item.name }}"
+    query: |
+      GRANT CONNECT ON DATABASE {{ item.name }} TO {{ platform_name }}_ro;
+      GRANT USAGE ON SCHEMA public TO {{ platform_name }}_ro;
+      GRANT SELECT ON ALL TABLES IN SCHEMA public TO {{ platform_name }}_ro;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA public
+        GRANT SELECT ON TABLES TO {{ platform_name }}_ro;
+  become_user: postgres
+  loop: "{{ postgresql_databases }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: false
+
+- name: Revoke the public schema free-for-all
+  community.postgresql.postgresql_query:
+    db: "{{ item.name }}"
+    query: "REVOKE ALL ON SCHEMA public FROM PUBLIC;"
+  become_user: postgres
+  loop: "{{ postgresql_databases }}"
+  loop_control:
+    label: "{{ item.name }}"
+  changed_when: false
