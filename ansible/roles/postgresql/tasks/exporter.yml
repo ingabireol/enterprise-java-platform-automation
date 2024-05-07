@@ -1,0 +1,53 @@
+---
+- name: Create the postgres_exporter system account
+  ansible.builtin.user:
+    name: postgres_exporter
+    system: true
+    shell: /sbin/nologin
+    create_home: false
+
+- name: Install postgres_exporter
+  ansible.builtin.unarchive:
+    src: "https://github.com/prometheus-community/postgres_exporter/releases/download/v0.15.0/postgres_exporter-0.15.0.linux-amd64.tar.gz"
+    dest: /usr/local/bin
+    remote_src: true
+    extra_opts: ["--strip-components=1", "--wildcards", "*/postgres_exporter"]
+    owner: root
+    group: root
+    mode: "0755"
+    creates: /usr/local/bin/postgres_exporter
+
+- name: Create the monitoring role in the database
+  community.postgresql.postgresql_user:
+    name: pg_exporter
+    password: "{{ vault_postgresql_exporter_password | default('changeme') }}"
+    role_attr_flags: LOGIN,NOSUPERUSER
+    state: present
+  become_user: postgres
+  when: postgresql_role == 'primary'
+  no_log: true
+
+- name: Grant the monitoring role the statistics views it needs and nothing more
+  community.postgresql.postgresql_query:
+    db: postgres
+    query: |
+      GRANT pg_monitor TO pg_exporter;
+      GRANT CONNECT ON DATABASE postgres TO pg_exporter;
+  become_user: postgres
+  when: postgresql_role == 'primary'
+  changed_when: false
+
+- name: Install the postgres_exporter unit
+  ansible.builtin.template:
+    src: postgres_exporter.service.j2
+    dest: /etc/systemd/system/postgres_exporter.service
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Enable postgres_exporter
+  ansible.builtin.systemd:
+    name: postgres_exporter
+    state: started
+    enabled: true
+    daemon_reload: true

@@ -1,0 +1,28 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Prometheus PostgreSQL exporter
+After=postgresql-{{ postgresql_version }}.service
+Wants=postgresql-{{ postgresql_version }}.service
+
+[Service]
+Type=simple
+User=postgres_exporter
+Group=postgres_exporter
+Environment="DATA_SOURCE_NAME=postgresql://pg_exporter:{{ vault_postgresql_exporter_password | default('changeme') }}@127.0.0.1:{{ postgresql_port }}/postgres?sslmode=require"
+ExecStart=/usr/local/bin/postgres_exporter \
+  --web.listen-address=:9187 \
+  --collector.database \
+  --collector.postmaster \
+  --collector.stat_statements \
+  --collector.stat_user_tables \
+  --collector.replication_slot
+Restart=on-failure
+RestartSec=10
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
