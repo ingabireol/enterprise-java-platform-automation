@@ -1,0 +1,147 @@
+# {{ ansible_managed }}
+# {{ platform_name | upper }} edge configuration — {{ env_tier }} tier.
+
+# --- Upstreams -------------------------------------------------------------
+# Spring Boot API services.
+{% for svc in spring_services %}
+upstream {{ svc.name }} {
+    least_conn;
+{% for h in groups['appservers'] %}
+    server {{ hostvars[h].ansible_host }}:{{ svc.port }} max_fails=3 fail_timeout=15s;
+{% endfor %}
+    keepalive {{ nginx_upstream_keepalive }};
+    keepalive_timeout 60s;
+}
+{% endfor %}
+
+# ZK UI tier. ip_hash because ZK keeps desktop state server side — a request that
+# lands on the wrong node loses the user's working context.
+upstream zk_ui {
+    ip_hash;
+{% for h in groups['tomcat_nodes'] | default([]) %}
+    server {{ hostvars[h].ansible_host }}:{{ tomcat_http_port }} max_fails=3 fail_timeout=15s;
+{% endfor %}
+    keepalive {{ nginx_upstream_keepalive }};
+}
+
+# --- HTTP: redirect only ---------------------------------------------------
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name {{ platform_domain }} _;
+
+    # The only thing served over plaintext is the redirect itself.
+    location / {
+        return 308 https://$host$request_uri;
+    }
+}
+
+# --- HTTPS -----------------------------------------------------------------
+server {
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    http2 on;
+    server_name {{ platform_domain }};
+
+    ssl_certificate     {{ nginx_ssl_cert }};
+    ssl_certificate_key {{ nginx_ssl_key }};
+{% if nginx_hsts_max_age | int > 0 %}
+    ssl_trusted_certificate {{ nginx_ssl_chain }};
+{% endif %}
+
+    # --- Security headers --------------------------------------------------
+{% if nginx_hsts_max_age | int > 0 %}
+    add_header Strict-Transport-Security "max-age={{ nginx_hsts_max_age }}; includeSubDomains" always;
+{% endif %}
+    add_header X-Content-Type-Options    "nosniff" always;
+    add_header X-Frame-Options           "SAMEORIGIN" always;
+    add_header Referrer-Policy           "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy        "geolocation=(), microphone=(), camera=(), payment=()" always;
+    add_header Content-Security-Policy   "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'" always;
+    add_header X-Request-ID              $request_id always;
+
+    limit_conn perip {{ nginx_conn_limit_per_ip }};
+
+    # --- Angular single-page frontend --------------------------------------
+    root /var/www/{{ platform_name }};
+    index index.html;
+
+    location / {
+        limit_req zone=general burst=60 nodelay;
+        try_files $uri $uri/ /index.html;
+        add_header Cache-Control "no-cache, must-revalidate";
+    }
+
+    # Fingerprinted build assets can be cached hard; index.html cannot.
+    location ~* \.(?:js|css|woff2?|png|jpg|jpeg|gif|svg|ico)$ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        access_log off;
+        try_files $uri =404;
+    }
+
+    # --- Authentication: tighter limits ------------------------------------
+    location /api/auth/ {
+        limit_req zone=login burst=5 nodelay;
+        proxy_pass http://{{ spring_services[0].name }};
+    }
+
+    # --- API services -------------------------------------------------------
+{% for svc in spring_services %}
+    location /api/{{ svc.name | regex_replace('^' ~ platform_name ~ '-', '') }}/ {
+        limit_req zone=general burst=60 nodelay;
+        proxy_pass http://{{ svc.name }}/;
+{% if 'reporting' in svc.name %}
+        # Report generation legitimately takes minutes; the default read timeout
+        # would truncate it and look like an application bug.
+        proxy_read_timeout 600s;
+        proxy_buffering off;
+{% endif %}
+    }
+{% endfor %}
+
+    # --- ZK UI tier ---------------------------------------------------------
+    location {{ tomcat_context }}/ {
+        limit_req zone=general burst=60 nodelay;
+        proxy_pass http://zk_ui;
+
+        # ZK uses long-lived AU requests and WebSocket where available.
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_read_timeout 300s;
+        proxy_buffering off;
+    }
+
+    # --- Health and metrics -------------------------------------------------
+    # Consumed by keepalived, the network load balancer and Prometheus. Never
+    # exposed beyond the management network.
+    location = /healthz {
+        access_log off;
+        allow 127.0.0.1;
+{% for h in groups['monitoring'] | default([]) %}
+        allow {{ hostvars[h].ansible_host }};
+{% endfor %}
+        allow 10.{{ 10 if env_tier == 'dev' else (20 if env_tier == 'test' else (30 if env_tier == 'prod' else 40)) }}.1.0/24;
+        deny all;
+        stub_status;
+    }
+
+    # --- Noise suppression ---------------------------------------------------
+    location = /favicon.ico { log_not_found off; access_log off; }
+    location = /robots.txt  { add_header Content-Type text/plain; return 200 "User-agent: *\nDisallow: /\n"; }
+
+    # Refuse to serve anything that looks like leaked VCS or editor state.
+    location ~ /\.(git|svn|env|ht) { deny all; return 404; }
+    location ~ ~$ { deny all; return 404; }
+
+    error_page 502 503 504 /maintenance.html;
+    location = /maintenance.html {
+        root /usr/share/nginx/html;
+        internal;
+    }
+}
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}

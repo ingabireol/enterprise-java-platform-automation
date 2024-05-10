@@ -1,0 +1,25 @@
+---
+nginx_worker_processes: auto
+nginx_worker_connections: 8192
+nginx_keepalive_timeout: 65
+nginx_client_max_body_size: 64m
+nginx_upstream_keepalive: 32
+
+nginx_tls_protocols: "TLSv1.2 TLSv1.3"
+nginx_tls_ciphers: "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305"
+nginx_hsts_max_age: 63072000
+nginx_ssl_cert: "/etc/pki/tls/certs/{{ platform_domain }}.crt"
+nginx_ssl_key: "/etc/pki/tls/private/{{ platform_domain }}.key"
+nginx_ssl_chain: "/etc/pki/tls/certs/{{ platform_domain }}-chain.crt"
+nginx_dhparam: /etc/pki/tls/dhparam.pem
+
+# Rate limiting. Generous enough for a normal user session, tight enough that a
+# scripted credential-stuffing run is throttled before it reaches the app tier.
+nginx_rate_limit_general: "30r/s"
+nginx_rate_limit_login: "5r/m"
+nginx_conn_limit_per_ip: 50
+
+keepalived_enabled: true
+keepalived_vip: ""
+keepalived_interface: eth0
+keepalived_virtual_router_id: 51

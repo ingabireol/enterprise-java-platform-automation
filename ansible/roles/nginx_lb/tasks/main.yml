@@ -1,0 +1,142 @@
+---
+# Edge tier: TLS termination, load balancing across the application nodes, and
+# the first line of request hygiene before anything reaches the JVM.
+
+- name: Install nginx
+  ansible.builtin.package:
+    name: nginx
+    state: present
+  tags: [nginx]
+
+- name: Create the TLS material directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: /etc/pki/tls/certs, mode: "0755" }
+    - { path: /etc/pki/tls/private, mode: "0700" }
+  tags: [nginx, tls]
+
+- name: Generate Diffie-Hellman parameters (first run only, several minutes)
+  community.crypto.openssl_dhparam:
+    path: "{{ nginx_dhparam }}"
+    size: 2048
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [nginx, tls]
+
+- name: Verify that the server certificate is present
+  ansible.builtin.stat:
+    path: "{{ nginx_ssl_cert }}"
+  register: _cert
+  tags: [nginx, tls]
+
+- name: Fail early with a clear message when the certificate is missing
+  ansible.builtin.fail:
+    msg: >-
+      {{ nginx_ssl_cert }} is not present on {{ inventory_hostname }}.
+      Install the certificate issued for {{ platform_domain }} first —
+      see docs/runbooks/tls-certificate-rotation.md.
+  when: not _cert.stat.exists and env_tier != 'dev'
+  tags: [nginx, tls]
+
+- name: Generate a self-signed certificate for development
+  when: not _cert.stat.exists and env_tier == 'dev'
+  tags: [nginx, tls]
+  block:
+    - name: Create a development private key
+      community.crypto.openssl_privatekey:
+        path: "{{ nginx_ssl_key }}"
+        size: 2048
+        mode: "0600"
+
+    - name: Create a development CSR
+      community.crypto.openssl_csr:
+        path: /tmp/dev.csr
+        privatekey_path: "{{ nginx_ssl_key }}"
+        common_name: "{{ platform_domain }}"
+        subject_alt_name: ["DNS:{{ platform_domain }}", "DNS:localhost"]
+
+    - name: Self-sign the development certificate
+      community.crypto.x509_certificate:
+        path: "{{ nginx_ssl_cert }}"
+        privatekey_path: "{{ nginx_ssl_key }}"
+        csr_path: /tmp/dev.csr
+        provider: selfsigned
+        selfsigned_not_after: "+365d"
+        mode: "0644"
+
+- name: Read the certificate to report its expiry
+  community.crypto.x509_certificate_info:
+    path: "{{ nginx_ssl_cert }}"
+  register: _certinfo
+  failed_when: false
+  tags: [nginx, tls]
+
+- name: Warn when the certificate expires within 30 days
+  ansible.builtin.debug:
+    msg: >-
+      TLS certificate on {{ inventory_hostname }} expires
+      {{ _certinfo.not_after | default('unknown') }}. Rotate it — see
+      docs/runbooks/tls-certificate-rotation.md.
+  when:
+    - _certinfo.not_after is defined
+    - (_certinfo.not_after | to_datetime('%Y%m%d%H%M%SZ') - ansible_date_time.iso8601 | to_datetime('%Y-%m-%dT%H:%M:%SZ')).days < 30
+  tags: [nginx, tls]
+
+- name: Deploy nginx.conf
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: /etc/nginx/nginx.conf
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+    validate: "nginx -t -c %s"
+  notify: Reload nginx
+  tags: [nginx]
+
+- name: Deploy the platform virtual host
+  ansible.builtin.template:
+    src: platform.conf.j2
+    dest: "/etc/nginx/conf.d/{{ platform_name }}.conf"
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+  notify: Reload nginx
+  tags: [nginx]
+
+- name: Remove the packaged default site
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/nginx/conf.d/default.conf
+    - /usr/share/nginx/html/index.html
+  notify: Reload nginx
+  tags: [nginx]
+
+- name: Allow nginx to make outbound network connections under SELinux
+  ansible.posix.seboolean:
+    name: httpd_can_network_connect
+    state: true
+    persistent: true
+  when: ansible_os_family == 'RedHat' and selinux_state != 'disabled'
+  tags: [nginx, selinux]
+
+- name: Enable and start nginx
+  ansible.builtin.service:
+    name: nginx
+    state: started
+    enabled: true
+  tags: [nginx]
+
+- name: Configure keepalived for the edge VIP
+  ansible.builtin.include_tasks: keepalived.yml
+  when: keepalived_enabled | bool and keepalived_vip | length > 0
+  tags: [nginx, keepalived, ha]
