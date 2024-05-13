@@ -1,0 +1,41 @@
+---
+# VRRP between the edge nodes. The VIP is what DNS points at; a failed nginx
+# lowers this node's priority so the peer takes the address over without anyone
+# being paged at the moment of failure.
+
+- name: Install keepalived
+  ansible.builtin.package:
+    name: keepalived
+    state: present
+
+- name: Deploy the keepalived health-check script
+  ansible.builtin.template:
+    src: check_nginx.sh.j2
+    dest: /etc/keepalived/check_nginx.sh
+    owner: root
+    group: root
+    mode: "0750"
+  notify: Restart keepalived
+
+- name: Deploy keepalived.conf
+  ansible.builtin.template:
+    src: keepalived.conf.j2
+    dest: /etc/keepalived/keepalived.conf
+    owner: root
+    group: root
+    mode: "0600"
+    backup: true
+  notify: Restart keepalived
+
+- name: Allow the VIP to be bound before the address is local
+  ansible.posix.sysctl:
+    name: net.ipv4.ip_nonlocal_bind
+    value: "1"
+    sysctl_file: /etc/sysctl.d/91-keepalived.conf
+    reload: true
+
+- name: Enable and start keepalived
+  ansible.builtin.service:
+    name: keepalived
+    state: started
+    enabled: true

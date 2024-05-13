@@ -1,0 +1,46 @@
+# {{ ansible_managed }}
+global_defs {
+    router_id {{ inventory_hostname }}
+    enable_script_security
+    script_user root
+    notification_email { {{ alert_email }} }
+    notification_email_from keepalived@{{ inventory_hostname }}.{{ platform_domain }}
+}
+
+vrrp_script check_nginx {
+    script "/etc/keepalived/check_nginx.sh"
+    interval 2
+    timeout 2
+    fall 3           # three consecutive failures before we give up the VIP
+    rise 2
+    weight -40       # drop below the peer's priority rather than going FAULT
+}
+
+vrrp_instance VI_PLATFORM {
+    state {{ 'MASTER' if keepalived_priority_map[inventory_hostname] | default(100) >= 150 else 'BACKUP' }}
+    interface {{ keepalived_interface }}
+    virtual_router_id {{ keepalived_virtual_router_id }}
+    priority {{ keepalived_priority_map[inventory_hostname] | default(100) }}
+    advert_int 1
+    preempt_delay 30      # settle before taking the VIP back after a flap
+
+    authentication {
+        auth_type PASS
+        auth_pass {{ (platform_name ~ keepalived_virtual_router_id) | hash('md5') | truncate(8, true, '') }}
+    }
+
+    unicast_src_ip {{ ansible_host }}
+    unicast_peer {
+{% for h in groups['loadbalancers'] if h != inventory_hostname %}
+        {{ hostvars[h].ansible_host }}
+{% endfor %}
+    }
+
+    virtual_ipaddress {
+        {{ keepalived_vip }}/24 dev {{ keepalived_interface }}
+    }
+
+    track_script {
+        check_nginx
+    }
+}

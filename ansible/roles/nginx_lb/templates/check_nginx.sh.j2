@@ -1,0 +1,29 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# keepalived health gate. Exits non-zero when this node should not hold the VIP.
+#
+# It is deliberately stricter than "is the process alive": a running nginx that
+# cannot reach a single application node is worse than a clean failover.
+
+set -u
+
+# 1. nginx must be answering locally.
+if ! /usr/bin/curl -fsS --max-time 2 -o /dev/null http://127.0.0.1/healthz; then
+    logger -t check_nginx "nginx stub_status unreachable"
+    exit 1
+fi
+
+# 2. At least one application upstream must be reachable.
+healthy=0
+{% for h in groups['appservers'] %}
+if /usr/bin/curl -fsS --max-time 2 -o /dev/null http://{{ hostvars[h].ansible_host }}:{{ spring_services[0].port }}{{ app_health_path }}; then
+    healthy=$((healthy + 1))
+fi
+{% endfor %}
+
+if [ "$healthy" -eq 0 ]; then
+    logger -t check_nginx "no application upstream is healthy from this node"
+    exit 1
+fi
+
+exit 0
