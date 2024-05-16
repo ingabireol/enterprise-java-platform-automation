@@ -1,0 +1,31 @@
+# {{ ansible_managed }}
+# Consumed by the scripts in {{ app_base_dir }}/bin. Shell-sourced: keep it
+# simple assignments only.
+
+PLATFORM_NAME="{{ platform_name }}"
+ENV_TIER="{{ env_tier }}"
+BACKUP_ROOT="{{ backup_root }}"
+BACKUP_RETENTION_DAYS="{{ backup_retention_days }}"
+BACKUP_COMPRESSION="{{ backup_compression }}"
+BACKUP_ENCRYPT="{{ 'true' if backup_encrypt else 'false' }}"
+
+PG_VERSION="{{ postgresql_version }}"
+PG_BINDIR="/usr/pgsql-{{ postgresql_version }}/bin"
+PG_DATA_DIR="{{ postgresql_data_dir }}"
+PG_HOST="{{ hostvars[groups['db_primary'][0]].ansible_host | default('127.0.0.1') }}"
+PG_PORT="{{ postgresql_port }}"
+PG_DATABASE="{{ platform_name }}"
+PG_ARCHIVE_DIR="{{ postgresql_archive_dir }}"
+PG_REPLICATION_USER="{{ postgresql_replication_user }}"
+
+OFFSITE_ENABLED="{{ 'true' if backup_offsite_enabled else 'false' }}"
+OFFSITE_TARGET="{{ backup_offsite_target }}"
+
+# Stated objectives — the verification job fails loudly if the newest usable
+# backup is older than RPO_MINUTES.
+RPO_MINUTES="{{ rpo_minutes }}"
+RTO_MINUTES="{{ rto_minutes }}"
+
+METRICS_DIR="/var/lib/node_exporter/textfile_collector"
+ALERT_EMAIL="{{ alert_email }}"
+LOG_DIR="/var/log/{{ platform_name }}"

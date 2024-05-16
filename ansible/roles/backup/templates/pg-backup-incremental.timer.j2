@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Schedule for the incremental backup
+
+[Timer]
+OnCalendar={{ backup_incremental_schedule }}
+RandomizedDelaySec=180
+Persistent=true
+
+[Install]
+WantedBy=timers.target

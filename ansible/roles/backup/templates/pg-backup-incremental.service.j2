@@ -1,0 +1,17 @@
+# {{ ansible_managed }}
+[Unit]
+Description={{ platform_name | upper }} — incremental (WAL + logical) backup
+Documentation=file://docs/runbooks/backup-restore.md
+After=postgresql-{{ postgresql_version }}.service
+OnFailure=status-email@%n.service
+
+[Service]
+Type=oneshot
+User=postgres
+Group=postgres
+ExecStart={{ app_base_dir }}/bin/pg_backup.sh --mode incremental
+TimeoutStartSec=7200
+Nice=10
+IOSchedulingClass=idle
+StandardOutput=append:/var/log/{{ platform_name }}/backup.log
+StandardError=append:/var/log/{{ platform_name }}/backup.log

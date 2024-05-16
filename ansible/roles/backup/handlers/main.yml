@@ -1,0 +1,4 @@
+---
+- name: Reload systemd timers
+  ansible.builtin.systemd:
+    daemon_reload: true

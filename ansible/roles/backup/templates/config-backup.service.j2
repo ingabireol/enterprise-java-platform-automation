@@ -1,0 +1,12 @@
+# {{ ansible_managed }}
+[Unit]
+Description={{ platform_name | upper }} — snapshot of system configuration
+Documentation=file://docs/runbooks/backup-restore.md
+
+[Service]
+Type=oneshot
+User=root
+ExecStart={{ app_base_dir }}/bin/config_backup.sh
+TimeoutStartSec=900
+StandardOutput=append:/var/log/{{ platform_name }}/backup.log
+StandardError=append:/var/log/{{ platform_name }}/backup.log

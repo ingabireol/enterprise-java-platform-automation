@@ -1,0 +1,23 @@
+---
+backup_root: "/backup/{{ platform_name }}"
+backup_full_schedule: "Sun *-*-* 01:00:00"
+backup_incremental_schedule: "Mon..Sat *-*-* 01:00:00"
+backup_verify_schedule: "Wed *-*-* 03:30:00"
+backup_retention_days: 35
+backup_compression: zstd
+backup_encrypt: true
+backup_offsite_enabled: false
+backup_offsite_target: ""
+
+# Objectives the schedule above is designed to meet. They are written down here
+# because a backup schedule with no stated objective cannot be judged correct.
+rpo_minutes: 15
+rto_minutes: 120
+
+backup_config_paths:
+  - /etc/nginx
+  - /etc/systemd/system
+  - "{{ app_base_dir }}/etc"
+  - /etc/ssh/sshd_config
+  - /etc/sysctl.d
+  - /etc/audit/rules.d

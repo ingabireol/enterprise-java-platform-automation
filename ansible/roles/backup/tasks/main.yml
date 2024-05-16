@@ -1,0 +1,111 @@
+---
+# Backup and recovery.
+#
+# The design assumption is that the backup will be needed at the worst possible
+# moment by someone who did not configure it. So: everything is scheduled by
+# systemd timers with explicit units, every run writes a machine-readable result
+# that Prometheus scrapes, and a restore is rehearsed weekly rather than assumed.
+
+- name: Create the backup directory tree
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: postgres
+    group: postgres
+    mode: "0700"
+  loop:
+    - "{{ backup_root }}"
+    - "{{ backup_root }}/base"
+    - "{{ backup_root }}/wal"
+    - "{{ backup_root }}/logical"
+    - "{{ backup_root }}/config"
+    - "{{ backup_root }}/verify"
+  tags: [backup]
+
+- name: Install backup tooling
+  ansible.builtin.package:
+    name: [zstd, gzip, rsync, openssl]
+    state: present
+  tags: [backup]
+
+- name: Install the shared shell library
+  ansible.builtin.copy:
+    src: ../../../scripts/lib/common.sh
+    dest: "{{ app_base_dir }}/bin/common.sh"
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [backup, scripts]
+
+- name: Install the backup scripts
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "{{ app_base_dir }}/bin/{{ item | basename }}"
+    owner: root
+    group: root
+    mode: "0750"
+  with_fileglob: "../../../scripts/backup/*.sh"
+  tags: [backup, scripts]
+
+- name: Render the backup configuration consumed by the scripts
+  ansible.builtin.template:
+    src: backup.conf.j2
+    dest: "{{ app_base_dir }}/etc/backup.conf"
+    owner: root
+    group: root
+    mode: "0600"
+  tags: [backup]
+
+- name: Install the backup systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - pg-backup-full.service
+    - pg-backup-full.timer
+    - pg-backup-incremental.service
+    - pg-backup-incremental.timer
+    - backup-verify.service
+    - backup-verify.timer
+    - config-backup.service
+    - config-backup.timer
+  notify: Reload systemd timers
+  tags: [backup, systemd]
+
+- name: Enable the backup timers
+  ansible.builtin.systemd:
+    name: "{{ item.name }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop:
+    - { name: pg-backup-full.timer,        when: "{{ backup_full_schedule | length > 0 }}" }
+    - { name: pg-backup-incremental.timer, when: "{{ backup_incremental_schedule | length > 0 }}" }
+    - { name: backup-verify.timer,         when: "{{ backup_verify_schedule | length > 0 }}" }
+    - { name: config-backup.timer,         when: true }
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.when | bool
+  tags: [backup, systemd]
+
+- name: Create the directory Prometheus reads backup results from
+  ansible.builtin.file:
+    path: /var/lib/node_exporter/textfile_collector
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  tags: [backup, monitoring]
+
+- name: Install the retention pruning timer
+  ansible.builtin.cron:
+    name: "Prune backups older than {{ backup_retention_days }} days"
+    minute: "45"
+    hour: "5"
+    user: root
+    job: "{{ app_base_dir }}/bin/prune_backups.sh >> /var/log/{{ platform_name }}/backup-prune.log 2>&1"
+    cron_file: platform-backup-prune
+  tags: [backup, retention]

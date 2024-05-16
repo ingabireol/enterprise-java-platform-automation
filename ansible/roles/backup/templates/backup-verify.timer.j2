@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Schedule for the backup restore verification
+
+[Timer]
+OnCalendar={{ backup_verify_schedule }}
+RandomizedDelaySec=600
+Persistent=true
+
+[Install]
+WantedBy=timers.target
