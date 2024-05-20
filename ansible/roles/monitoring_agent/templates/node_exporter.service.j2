@@ -1,0 +1,30 @@
+# {{ ansible_managed }}
+[Unit]
+Description=Prometheus node exporter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=node_exporter
+Group=node_exporter
+ExecStart=/usr/local/bin/node_exporter \
+  --web.listen-address={{ ansible_host }}:{{ node_exporter_port }} \
+{% for c in node_exporter_collectors_extra %}
+  --collector.{{ c }} \
+{% endfor %}
+  --collector.textfile.directory={{ node_exporter_textfile_dir }} \
+  --collector.filesystem.mount-points-exclude='^/(dev|proc|sys|run|var/lib/docker/.+)($|/)' \
+  --no-collector.wifi \
+  --no-collector.infiniband
+
+Restart=on-failure
+RestartSec=10
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

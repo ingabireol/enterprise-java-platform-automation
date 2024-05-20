@@ -1,0 +1,130 @@
+---
+# Every host exposes two things: numbers (node_exporter → Prometheus) and words
+# (promtail → Loki). Application-level metrics come from the Micrometer endpoint
+# the app_server role configures, so nothing app-specific belongs in here.
+
+- name: Create the exporter service account
+  ansible.builtin.user:
+    name: node_exporter
+    system: true
+    shell: /sbin/nologin
+    create_home: false
+  tags: [monitoring]
+
+- name: Create the textfile collector directory
+  ansible.builtin.file:
+    path: "{{ node_exporter_textfile_dir }}"
+    state: directory
+    owner: root
+    group: node_exporter
+    mode: "0775"
+  tags: [monitoring]
+
+- name: Install node_exporter
+  ansible.builtin.unarchive:
+    src: "https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}/node_exporter-{{ node_exporter_version }}.linux-amd64.tar.gz"
+    dest: /usr/local/bin
+    remote_src: true
+    extra_opts: ["--strip-components=1", "--wildcards", "*/node_exporter"]
+    owner: root
+    group: root
+    mode: "0755"
+    creates: /usr/local/bin/node_exporter
+  notify: Restart node_exporter
+  tags: [monitoring]
+
+- name: Install the node_exporter unit
+  ansible.builtin.template:
+    src: node_exporter.service.j2
+    dest: /etc/systemd/system/node_exporter.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart node_exporter
+  tags: [monitoring]
+
+- name: Enable node_exporter
+  ansible.builtin.systemd:
+    name: node_exporter
+    state: started
+    enabled: true
+    daemon_reload: true
+  tags: [monitoring]
+
+- name: Install promtail
+  when: promtail_loki_url | length > 0
+  tags: [monitoring, logging]
+  block:
+    - name: Create the promtail state directory
+      ansible.builtin.file:
+        path: /var/lib/promtail
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Download promtail
+      ansible.builtin.get_url:
+        url: "https://github.com/grafana/loki/releases/download/v{{ promtail_version }}/promtail-linux-amd64.zip"
+        dest: /tmp/promtail.zip
+        mode: "0644"
+      register: _promtail_dl
+
+    - name: Unpack promtail
+      ansible.builtin.unarchive:
+        src: /tmp/promtail.zip
+        dest: /usr/local/bin
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0755"
+        creates: /usr/local/bin/promtail-linux-amd64
+
+    - name: Link promtail onto the path
+      ansible.builtin.file:
+        src: /usr/local/bin/promtail-linux-amd64
+        dest: /usr/local/bin/promtail
+        state: link
+
+    - name: Deploy the promtail configuration
+      ansible.builtin.template:
+        src: promtail.yml.j2
+        dest: /etc/promtail.yml
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart promtail
+
+    - name: Install the promtail unit
+      ansible.builtin.template:
+        src: promtail.service.j2
+        dest: /etc/systemd/system/promtail.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart promtail
+
+    - name: Enable promtail
+      ansible.builtin.systemd:
+        name: promtail
+        state: started
+        enabled: true
+        daemon_reload: true
+
+- name: Install the health-check script used by the textfile collector
+  ansible.builtin.copy:
+    src: ../../../scripts/monitoring/health_check.sh
+    dest: "{{ app_base_dir }}/bin/health_check.sh"
+    owner: root
+    group: root
+    mode: "0750"
+  tags: [monitoring]
+
+- name: Schedule the platform health check
+  ansible.builtin.cron:
+    name: "Platform health check → textfile collector"
+    minute: "*/2"
+    user: root
+    job: "{{ app_base_dir }}/bin/health_check.sh --quiet --metrics {{ node_exporter_textfile_dir }}/platform_health.prom"
+    cron_file: platform-health
+  tags: [monitoring]
