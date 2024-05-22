@@ -1,0 +1,6 @@
+---
+security_only: true
+patch_reboot_if_required: true
+patch_reboot_timeout: 900
+patch_exclude_packages: []          # e.g. ["postgresql*"] during a freeze
+patch_snapshot_before: false        # set true where the hypervisor API is wired in

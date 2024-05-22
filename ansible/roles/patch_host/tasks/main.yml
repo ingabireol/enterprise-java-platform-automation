@@ -1,0 +1,123 @@
+---
+# Patch a single host, then decide honestly whether it needs a reboot.
+#
+# The reboot decision uses `needs-restarting -r`, not a guess: patching without
+# rebooting leaves a running kernel with known CVEs, and rebooting when it was
+# not required wastes an outage window.
+
+- name: Record the pre-patch package state for the change record
+  ansible.builtin.shell: |
+    set -o pipefail
+    rpm -qa --qf '%{NAME}-%{VERSION}-%{RELEASE}\n' | sort
+  args:
+    executable: /bin/bash
+  register: _pre_state
+  changed_when: false
+  check_mode: false
+
+- name: Save the pre-patch state to the control node
+  ansible.builtin.copy:
+    content: "{{ _pre_state.stdout }}\n"
+    dest: "/tmp/patch-evidence/{{ inventory_hostname }}-pre-{{ ansible_date_time.date }}.txt"
+    mode: "0644"
+  delegate_to: localhost
+  become: false
+
+- name: Apply security updates
+  ansible.builtin.dnf:
+    name: "*"
+    state: latest
+    security: true
+    bugfix: false
+    exclude: "{{ patch_exclude_packages }}"
+    update_cache: true
+  when:
+    - ansible_os_family == 'RedHat'
+    - security_only | bool
+  register: _patch_sec
+
+- name: Apply all available updates
+  ansible.builtin.dnf:
+    name: "*"
+    state: latest
+    exclude: "{{ patch_exclude_packages }}"
+    update_cache: true
+  when:
+    - ansible_os_family == 'RedHat'
+    - not security_only | bool
+  register: _patch_all
+
+- name: Apply updates on Debian-family hosts
+  ansible.builtin.apt:
+    upgrade: "{{ 'safe' if security_only | bool else 'full' }}"
+    update_cache: true
+    cache_valid_time: 3600
+  when: ansible_os_family == 'Debian'
+  register: _patch_deb
+
+- name: Record whether anything actually changed
+  ansible.builtin.set_fact:
+    patched: >-
+      {{ (_patch_sec is defined and _patch_sec.changed)
+         or (_patch_all is defined and _patch_all.changed)
+         or (_patch_deb is defined and _patch_deb.changed) }}
+
+- name: Determine whether a reboot is required
+  ansible.builtin.command: needs-restarting -r
+  register: _needs_reboot
+  changed_when: false
+  failed_when: _needs_reboot.rc not in [0, 1]
+  when: ansible_os_family == 'RedHat'
+
+- name: Check the Debian reboot marker
+  ansible.builtin.stat:
+    path: /var/run/reboot-required
+  register: _deb_reboot
+  when: ansible_os_family == 'Debian'
+
+- name: Reboot when the running kernel or core libraries were replaced
+  ansible.builtin.reboot:
+    msg: "Rebooting after patching — scheduled by Ansible"
+    reboot_timeout: "{{ patch_reboot_timeout }}"
+    post_reboot_delay: 30
+    test_command: systemctl is-system-running --wait
+  when:
+    - patch_reboot_if_required | bool
+    - (_needs_reboot is defined and _needs_reboot.rc == 1)
+      or (_deb_reboot is defined and _deb_reboot.stat.exists | default(false))
+  register: _reboot
+
+- name: Record whether the host rebooted
+  ansible.builtin.set_fact:
+    rebooted: "{{ _reboot is defined and _reboot.changed | default(false) }}"
+
+- name: Wait for all enabled services to settle after the reboot
+  ansible.builtin.command: systemctl is-system-running --wait
+  register: _systemd_state
+  changed_when: false
+  failed_when: _systemd_state.stdout not in ['running', 'degraded']
+  when: rebooted | bool
+
+- name: Report any failed units
+  ansible.builtin.command: systemctl list-units --state=failed --no-legend
+  register: _failed_units
+  changed_when: false
+  failed_when: _failed_units.stdout | length > 0
+
+- name: Record the post-patch package state
+  ansible.builtin.shell: |
+    set -o pipefail
+    rpm -qa --qf '%{NAME}-%{VERSION}-%{RELEASE}\n' | sort
+  args:
+    executable: /bin/bash
+  register: _post_state
+  changed_when: false
+  check_mode: false
+
+- name: Save the post-patch state alongside the pre-patch state
+  ansible.builtin.copy:
+    content: "{{ _post_state.stdout }}\n"
+    dest: "/tmp/patch-evidence/{{ inventory_hostname }}-post-{{ ansible_date_time.date }}.txt"
+    mode: "0644"
+  delegate_to: localhost
+  become: false
