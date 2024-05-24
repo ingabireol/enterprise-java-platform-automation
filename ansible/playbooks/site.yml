@@ -1,0 +1,117 @@
+---
+# ===========================================================================
+# site.yml — build or converge an entire environment tier.
+#
+#   ansible-playbook -i inventories/prod/hosts.yml playbooks/site.yml --check --diff
+#   ansible-playbook -i inventories/prod/hosts.yml playbooks/site.yml
+#
+# Ordering matters: the database has to exist before the application tier tries
+# to reach it, and the edge tier is converged last so that a half-built platform
+# is never advertised to users.
+# ===========================================================================
+
+- name: Pre-flight checks
+  hosts: platform
+  gather_facts: true
+  tags: [always]
+  tasks:
+    - name: Confirm the target OS is supported
+      ansible.builtin.assert:
+        that:
+          - ansible_os_family in ['RedHat', 'Debian']
+          - ansible_distribution_major_version | int >= 9 or ansible_distribution == 'Ubuntu'
+        fail_msg: >-
+          {{ inventory_hostname }} runs {{ ansible_distribution }}
+          {{ ansible_distribution_version }}, which this repository does not
+          support. Supported: RHEL/Rocky 9+, Ubuntu 22.04+.
+
+    - name: Confirm there is enough free space to proceed
+      ansible.builtin.assert:
+        that:
+          - (ansible_mounts | selectattr('mount', 'eq', '/') | first).size_available > 2147483648
+        fail_msg: "Less than 2 GiB free on / — converging now would risk filling the root filesystem."
+
+    - name: Warn when production is being changed outside the maintenance window
+      ansible.builtin.debug:
+        msg: >-
+          {{ env_tier | upper }} change in progress outside the declared window
+          ({{ maintenance_window }}). Ensure an approved change record exists.
+      when:
+        - change_control_required | bool
+        - ansible_date_time.weekday not in ['Saturday', 'Sunday']
+      run_once: true
+
+- name: Baseline every host
+  hosts: platform
+  tags: [common]
+  roles:
+    - role: common
+
+- name: Apply the security hardening baseline
+  hosts: platform
+  tags: [hardening, security]
+  roles:
+    - role: hardening
+
+- name: Install the monitoring agents
+  hosts: platform
+  tags: [monitoring]
+  roles:
+    - role: monitoring_agent
+
+- name: Build the database tier
+  hosts: databases
+  serial: 1                      # never take both database nodes at once
+  tags: [database]
+  roles:
+    - role: postgresql
+
+- name: Build the backup tier
+  hosts: backup:databases
+  tags: [backup]
+  roles:
+    - role: backup
+
+- name: Build the application tier
+  hosts: appservers:tomcat_nodes
+  # 25% at a time so that a bad converge cannot take the whole tier down.
+  serial: "25%"
+  tags: [application]
+  roles:
+    - role: java_runtime
+    - role: app_server
+
+- name: Build the edge tier
+  hosts: loadbalancers
+  serial: 1
+  tags: [edge]
+  roles:
+    - role: java_runtime
+      when: false                # the edge has no JVM; listed to document the choice
+    - role: nginx_lb
+
+- name: Post-converge verification
+  hosts: loadbalancers
+  gather_facts: false
+  tags: [always, verify]
+  tasks:
+    - name: Confirm the platform answers over HTTPS
+      ansible.builtin.uri:
+        url: "https://{{ ansible_host }}/healthz"
+        validate_certs: "{{ env_tier != 'dev' }}"
+        status_code: [200, 401, 403]
+      register: _edge_check
+      retries: 6
+      delay: 10
+      until: _edge_check is succeeded
+      when: app_services_started | default(true) | bool
+
+    - name: Summarise the converge
+      ansible.builtin.debug:
+        msg:
+          - "Environment : {{ env_tier }} ({{ site_name }})"
+          - "Edge        : {{ groups['loadbalancers'] | length }} node(s)"
+          - "Application : {{ groups['appservers'] | length }} Spring Boot node(s), {{ groups['tomcat_nodes'] | default([]) | length }} ZK node(s)"
+          - "Database    : {{ groups['databases'] | length }} node(s)"
+          - "Next        : make audit ENV={{ env_tier }}"
+      run_once: true

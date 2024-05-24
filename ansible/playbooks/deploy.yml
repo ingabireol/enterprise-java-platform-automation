@@ -1,0 +1,182 @@
+---
+# ===========================================================================
+# deploy.yml — release an application version with zero user-visible downtime.
+#
+#   ansible-playbook -i inventories/prod/hosts.yml playbooks/deploy.yml \
+#       -e app_version=2.4.1
+#
+# The sequence per node is: drain from the load balancer → stop → swap the
+# symlink → start → wait for readiness → smoke test → return to the pool.
+# One node at a time, and any failure stops the rollout with the remaining
+# nodes still serving the old version.
+# ===========================================================================
+
+- name: Validate the release before touching any server
+  hosts: localhost
+  gather_facts: false
+  tags: [always]
+  tasks:
+    - name: Require an explicit version
+      ansible.builtin.assert:
+        that:
+          - app_version is defined
+          - app_version != 'latest'
+          - app_version is match('^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$')
+        fail_msg: >-
+          Pass an explicit semantic version, e.g. -e app_version=2.4.1.
+          'latest' is refused: a deployment must be reproducible.
+
+    - name: Confirm the artefacts exist in the repository
+      ansible.builtin.uri:
+        url: "{{ app_artifact_repo }}/{{ item.name }}/{{ app_version }}/{{ item.name }}-{{ app_version }}.jar"
+        method: HEAD
+        status_code: 200
+      loop: "{{ spring_services }}"
+      loop_control:
+        label: "{{ item.name }}"
+      delegate_to: localhost
+      run_once: true
+
+- name: Record a rollback point
+  hosts: appservers:tomcat_nodes
+  gather_facts: false
+  tags: [deploy]
+  tasks:
+    - name: Resolve the currently deployed release
+      ansible.builtin.stat:
+        path: "{{ app_base_dir }}/current"
+      register: _current_link
+
+    - name: Write the rollback manifest
+      ansible.builtin.copy:
+        content: |
+          # Written by deploy.yml at {{ ansible_date_time.iso8601 }}
+          PREVIOUS_RELEASE={{ _current_link.stat.lnk_target | default('none') | basename }}
+          TARGET_RELEASE={{ app_version }}
+          DEPLOYED_BY={{ lookup('env', 'USER') | default('unknown') }}
+          DEPLOYED_AT={{ ansible_date_time.iso8601 }}
+        dest: "{{ app_base_dir }}/etc/rollback.manifest"
+        owner: root
+        group: "{{ app_group }}"
+        mode: "0640"
+
+- name: Roll the release out one node at a time
+  hosts: appservers
+  serial: 1
+  max_fail_percentage: 0
+  tags: [deploy]
+  tasks:
+    - name: Drain this node from the load balancer
+      ansible.builtin.file:
+        path: "{{ app_base_dir }}/etc/drain"
+        state: touch
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: "0644"
+      notify: Wait for connections to drain
+
+    - name: Flush handlers so the drain completes before we stop anything
+      ansible.builtin.meta: flush_handlers
+
+    - name: Create the release directory
+      ansible.builtin.file:
+        path: "{{ app_base_dir }}/releases/{{ app_version }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: "0750"
+
+    - name: Fetch the service artefacts
+      ansible.builtin.get_url:
+        url: "{{ app_artifact_repo }}/{{ item.name }}/{{ app_version }}/{{ item.name }}-{{ app_version }}.jar"
+        dest: "{{ app_base_dir }}/releases/{{ app_version }}/{{ item.name }}.jar"
+        checksum: "sha256:{{ app_artifact_repo }}/{{ item.name }}/{{ app_version }}/{{ item.name }}-{{ app_version }}.jar.sha256"
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: "0640"
+      loop: "{{ spring_services }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Stop the services
+      ansible.builtin.systemd:
+        name: "{{ item.name }}.service"
+        state: stopped
+      loop: "{{ spring_services }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Point current at the new release
+      ansible.builtin.file:
+        src: "{{ app_base_dir }}/releases/{{ app_version }}"
+        dest: "{{ app_base_dir }}/current"
+        state: link
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        force: true
+
+    - name: Start the services
+      ansible.builtin.systemd:
+        name: "{{ item.name }}.service"
+        state: started
+      loop: "{{ spring_services }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Wait for readiness
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ item.management_port }}{{ app_health_path }}"
+        status_code: 200
+      register: _ready
+      until: _ready.status == 200
+      retries: 30
+      delay: 10
+      loop: "{{ spring_services }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Confirm the deployed version is the one we asked for
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ item.management_port }}/actuator/info"
+        return_content: true
+      register: _info
+      failed_when: app_version not in (_info.content | default(''))
+      loop: "{{ spring_services }}"
+      loop_control:
+        label: "{{ item.name }}"
+      changed_when: false
+
+    - name: Return this node to the load balancer pool
+      ansible.builtin.file:
+        path: "{{ app_base_dir }}/etc/drain"
+        state: absent
+
+    - name: Let the load balancer observe the node as healthy again
+      ansible.builtin.pause:
+        seconds: 20
+
+    - name: Prune old releases beyond the retention count
+      ansible.builtin.shell: |
+        set -o pipefail
+        cd {{ app_base_dir }}/releases
+        ls -1dt */ | tail -n +{{ app_releases_keep + 1 }} | xargs -r rm -rf
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+  handlers:
+    - name: Wait for connections to drain
+      ansible.builtin.pause:
+        seconds: "{{ spring_shutdown_grace }}"
+
+- name: Deployment summary
+  hosts: localhost
+  gather_facts: false
+  tags: [always]
+  tasks:
+    - name: Report the outcome
+      ansible.builtin.debug:
+        msg:
+          - "Deployed {{ app_version }} to {{ groups['appservers'] | length }} node(s)."
+          - "Rollback: ansible-playbook playbooks/rollback.yml -i <inventory>"
+          - "Watch: Grafana → Platform Overview → error rate and p99 latency for 30 minutes."
