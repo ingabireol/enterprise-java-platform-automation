@@ -1,0 +1,163 @@
+---
+# ===========================================================================
+# compliance-audit.yml — read-only report of an environment against the
+# hardening baseline in docs/security/hardening-baseline.md.
+#
+#   ansible-playbook -i inventories/prod/hosts.yml playbooks/compliance-audit.yml
+#
+# Changes nothing. Produces a per-host pass/fail table and a machine-readable
+# JSON report that CI can diff between runs, so drift is visible rather than
+# discovered during an incident.
+# ===========================================================================
+
+- name: Audit the hardening baseline
+  hosts: platform
+  gather_facts: true
+  become: true
+  vars:
+    audit_results: []
+  tasks:
+    # --- SSH ---------------------------------------------------------------
+    - name: Read the effective sshd configuration
+      ansible.builtin.command: sshd -T
+      register: _sshd
+      changed_when: false
+
+    - name: Evaluate the SSH controls
+      ansible.builtin.set_fact:
+        audit_results: "{{ audit_results + [{'control': item.id, 'description': item.desc, 'status': ('PASS' if item.expect in _sshd.stdout else 'FAIL')}] }}"
+      loop:
+        - { id: "SSH-01", desc: "Root login disabled",          expect: "permitrootlogin no" }
+        - { id: "SSH-02", desc: "Password authentication off",  expect: "passwordauthentication no" }
+        - { id: "SSH-03", desc: "Public key authentication on", expect: "pubkeyauthentication yes" }
+        - { id: "SSH-04", desc: "Empty passwords refused",      expect: "permitemptypasswords no" }
+        - { id: "SSH-05", desc: "Max auth tries limited",       expect: "maxauthtries {{ ssh_max_auth_tries }}" }
+        - { id: "SSH-06", desc: "Login banner presented",       expect: "banner /etc/issue.net" }
+      loop_control:
+        label: "{{ item.id }}"
+
+    # --- Kernel and network -------------------------------------------------
+    - name: Read the runtime sysctl values
+      ansible.builtin.command: "sysctl -n {{ item.key }}"
+      register: _sysctl_values
+      changed_when: false
+      failed_when: false
+      loop: "{{ hardening_network_sysctl | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: Evaluate the kernel controls
+      ansible.builtin.set_fact:
+        audit_results: "{{ audit_results + [{'control': 'SYSCTL-' + item.item.key, 'description': 'sysctl ' + item.item.key + ' = ' + (item.item.value | string), 'status': ('PASS' if item.stdout | default('') | trim == (item.item.value | string) else 'FAIL')}] }}"
+      loop: "{{ _sysctl_values.results }}"
+      loop_control:
+        label: "{{ item.item.key }}"
+
+    # --- Firewall -----------------------------------------------------------
+    - name: Check that the firewall is loaded with a default-deny input policy
+      ansible.builtin.command: nft list chain inet filter input
+      register: _nft
+      changed_when: false
+      failed_when: false
+
+    - name: Evaluate the firewall control
+      ansible.builtin.set_fact:
+        audit_results: "{{ audit_results + [{'control': 'FW-01', 'description': 'Default-deny inbound policy', 'status': ('PASS' if 'policy drop' in (_nft.stdout | default('')) else 'FAIL')}] }}"
+
+    # --- SELinux ------------------------------------------------------------
+    - name: Evaluate the SELinux control
+      ansible.builtin.set_fact:
+        audit_results: "{{ audit_results + [{'control': 'MAC-01', 'description': 'SELinux in ' + selinux_state, 'status': ('PASS' if ansible_selinux.status | default('') == 'enabled' and ansible_selinux.mode | default('') == selinux_state else 'FAIL')}] }}"
+      when: ansible_os_family == 'RedHat'
+
+    # --- Audit daemon --------------------------------------------------------
+    - name: Check auditd
+      ansible.builtin.command: systemctl is-active auditd
+      register: _auditd
+      changed_when: false
+      failed_when: false
+
+    - name: Evaluate the audit control
+      ansible.builtin.set_fact:
+        audit_results: "{{ audit_results + [{'control': 'AUD-01', 'description': 'auditd running', 'status': ('PASS' if _auditd.stdout | trim == 'active' else 'FAIL')}] }}"
+      when: auditd_enabled | bool
+
+    # --- File permissions ----------------------------------------------------
+    - name: Stat sensitive files
+      ansible.builtin.stat:
+        path: "{{ item.path }}"
+      register: _perms
+      loop:
+        - { path: /etc/shadow, mode: "0000" }
+        - { path: /etc/passwd, mode: "0644" }
+        - { path: /etc/ssh/sshd_config, mode: "0600" }
+      loop_control:
+        label: "{{ item.path }}"
+
+    - name: Evaluate the permission controls
+      ansible.builtin.set_fact:
+        audit_results: "{{ audit_results + [{'control': 'PERM-' + (item.item.path | basename), 'description': item.item.path + ' mode ' + item.item.mode, 'status': ('PASS' if item.stat.mode | default('') == item.item.mode else 'FAIL')}] }}"
+      loop: "{{ _perms.results }}"
+      loop_control:
+        label: "{{ item.item.path }}"
+
+    # --- Patch currency ------------------------------------------------------
+    - name: Count outstanding security updates
+      ansible.builtin.command: dnf updateinfo list --security
+      register: _sec_updates
+      changed_when: false
+      failed_when: false
+      when: ansible_os_family == 'RedHat'
+
+    - name: Evaluate patch currency
+      ansible.builtin.set_fact:
+        audit_results: "{{ audit_results + [{'control': 'PATCH-01', 'description': 'No outstanding security updates', 'status': ('PASS' if (_sec_updates.stdout_lines | default([]) | length) == 0 else 'FAIL'), 'detail': ((_sec_updates.stdout_lines | default([]) | length) | string) + ' outstanding'}] }}"
+      when: ansible_os_family == 'RedHat'
+
+    # --- Backup freshness ----------------------------------------------------
+    - name: Check the age of the most recent successful backup
+      ansible.builtin.stat:
+        path: /var/lib/node_exporter/textfile_collector/backup_status.prom
+      register: _backup_metric
+      when: "'databases' in group_names"
+
+    - name: Evaluate backup freshness
+      ansible.builtin.set_fact:
+        audit_results: "{{ audit_results + [{'control': 'BKP-01', 'description': 'Backup completed within 26 hours', 'status': ('PASS' if (_backup_metric.stat.exists | default(false)) and ((ansible_date_time.epoch | int) - (_backup_metric.stat.mtime | default(0) | int)) < 93600 else 'FAIL')}] }}"
+      when: "'databases' in group_names"
+
+    # --- Output --------------------------------------------------------------
+    - name: Print the per-host result table
+      ansible.builtin.debug:
+        msg: "{{ '%-22s %-8s %s' | format(item.control, item.status, item.description) }}"
+      loop: "{{ audit_results }}"
+      loop_control:
+        label: "{{ item.control }}"
+
+    - name: Write the machine-readable report
+      ansible.builtin.copy:
+        content: "{{ {'host': inventory_hostname, 'environment': env_tier, 'timestamp': ansible_date_time.iso8601, 'results': audit_results} | to_nice_json }}\n"
+        dest: "/tmp/compliance-{{ env_tier }}/{{ inventory_hostname }}.json"
+        mode: "0644"
+      delegate_to: localhost
+      become: false
+
+    - name: Fail the run when any control failed
+      ansible.builtin.assert:
+        that:
+          - audit_results | selectattr('status', 'eq', 'FAIL') | list | length == 0
+        fail_msg: >-
+          {{ audit_results | selectattr('status', 'eq', 'FAIL') | map(attribute='control') | join(', ') }}
+          failed on {{ inventory_hostname }}.
+        success_msg: "All {{ audit_results | length }} controls passed on {{ inventory_hostname }}."
+      ignore_errors: true          # report every host, then summarise below
+
+- name: Audit summary
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Point at the report
+      ansible.builtin.debug:
+        msg:
+          - "Per-host JSON reports: /tmp/compliance-{{ hostvars[groups['platform'][0]].env_tier }}/"
+          - "Baseline definition:   docs/security/hardening-baseline.md"

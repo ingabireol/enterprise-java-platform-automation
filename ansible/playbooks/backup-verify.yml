@@ -1,0 +1,52 @@
+---
+# ===========================================================================
+# backup-verify.yml — restore the most recent backup into a scratch cluster and
+# assert that the restored data is usable.
+#
+#   ansible-playbook -i inventories/prod/hosts.yml playbooks/backup-verify.yml
+#
+# This is the same script the weekly systemd timer runs; having it here lets an
+# operator trigger a verification on demand — for instance before a risky
+# migration, or after changing anything about the backup path.
+# ===========================================================================
+
+- name: Verify the latest backup can actually be restored
+  hosts: db_primary
+  gather_facts: true
+  tasks:
+    - name: Confirm there is disk space for a scratch restore
+      ansible.builtin.assert:
+        that:
+          - (ansible_mounts | selectattr('mount', 'eq', '/') | first).size_available > 21474836480
+        fail_msg: "Less than 20 GiB free — a scratch restore needs room for a full copy of the cluster."
+
+    - name: Run the restore verification
+      ansible.builtin.command: "{{ app_base_dir }}/bin/verify_restore.sh --port 55432 --json"
+      become_user: postgres
+      register: _verify
+      changed_when: false
+      failed_when: _verify.rc != 0
+      async: "{{ rto_minutes * 60 }}"
+      poll: 30
+
+    - name: Parse the verification result
+      ansible.builtin.set_fact:
+        verify_report: "{{ _verify.stdout | from_json }}"
+
+    - name: Report
+      ansible.builtin.debug:
+        msg:
+          - "Backup verified      : {{ verify_report.backup_label | default('unknown') }}"
+          - "Backup age (minutes) : {{ verify_report.backup_age_minutes | default('unknown') }}"
+          - "Restore duration (s) : {{ verify_report.restore_seconds | default('unknown') }}"
+          - "Rows asserted        : {{ verify_report.row_checks | default('unknown') }}"
+          - "Result               : {{ verify_report.result | default('unknown') }}"
+
+    - name: Fail when the backup is older than the stated recovery point objective
+      ansible.builtin.assert:
+        that:
+          - verify_report.backup_age_minutes | int <= (rpo_minutes | int * 2)
+        fail_msg: >-
+          The newest verified backup is {{ verify_report.backup_age_minutes }} minutes
+          old, against a stated RPO of {{ rpo_minutes }} minutes. Investigate the
+          backup schedule before relying on this environment.

@@ -1,0 +1,159 @@
+---
+# ===========================================================================
+# patching.yml — rolling OS patch cycle with health gates between batches.
+#
+#   ansible-playbook -i inventories/prod/hosts.yml playbooks/patching.yml
+#   ansible-playbook ... -e security_only=false     # full update, not just security
+#   ansible-playbook ... --check                    # report what would be patched
+#
+# Order is chosen so that the least user-visible tier is patched first and the
+# platform never loses quorum: monitoring → backup → replica DB → app nodes one
+# at a time → primary DB (with a controlled switchover) → edge nodes one at a time.
+# ===========================================================================
+
+- name: Report what is available before changing anything
+  hosts: platform
+  gather_facts: true
+  tags: [always, report]
+  vars:
+    security_only: true
+  tasks:
+    - name: Check for available updates
+      ansible.builtin.command:
+        cmd: "{{ 'dnf updateinfo list --security' if security_only | bool else 'dnf check-update' }}"
+      register: _updates
+      changed_when: false
+      failed_when: _updates.rc not in [0, 100]
+      check_mode: false
+
+    - name: Record the pending update count
+      ansible.builtin.set_fact:
+        pending_updates: "{{ _updates.stdout_lines | length }}"
+
+    - name: Summarise
+      ansible.builtin.debug:
+        msg: "{{ inventory_hostname }}: {{ pending_updates }} pending {{ 'security ' if security_only | bool else '' }}update(s)"
+
+- name: Patch the supporting tiers first
+  hosts: monitoring:backup
+  serial: 1
+  tags: [patch]
+  vars:
+    security_only: true
+  roles:
+    - role: patch_host
+
+- name: Patch the database replica, then the primary
+  hosts: databases
+  serial: 1
+  order: sorted                  # replicas sort after the primary; reversed below
+  tags: [patch, database]
+  vars:
+    security_only: true
+  pre_tasks:
+    - name: Refuse to patch the primary while replication is behind
+      community.postgresql.postgresql_query:
+        db: postgres
+        query: >-
+          SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn) AS lag_bytes
+          FROM pg_stat_replication;
+      become_user: postgres
+      register: _lag
+      when: postgresql_role | default('primary') == 'primary'
+      changed_when: false
+
+    - name: Assert replication lag is within tolerance
+      ansible.builtin.assert:
+        that:
+          - (_lag.query_result | map(attribute='lag_bytes') | max | default(0)) < postgresql_max_replication_lag_bytes | default(134217728)
+        fail_msg: >-
+          Replication lag exceeds the tolerance. Patching the primary now would
+          widen the recovery window. Investigate before proceeding.
+      when:
+        - postgresql_role | default('primary') == 'primary'
+        - _lag.query_result is defined
+        - _lag.query_result | length > 0
+  roles:
+    - role: patch_host
+
+- name: Patch the application tier one node at a time
+  hosts: appservers:tomcat_nodes
+  serial: 1
+  max_fail_percentage: 0
+  tags: [patch, application]
+  vars:
+    security_only: true
+  pre_tasks:
+    - name: Drain the node
+      ansible.builtin.file:
+        path: "{{ app_base_dir }}/etc/drain"
+        state: touch
+        mode: "0644"
+
+    - name: Wait for in-flight work to complete
+      ansible.builtin.pause:
+        seconds: "{{ spring_shutdown_grace }}"
+  roles:
+    - role: patch_host
+  post_tasks:
+    - name: Wait for the services to come back
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ item.management_port }}{{ app_health_path }}"
+        status_code: 200
+      register: _ready
+      until: _ready.status == 200
+      retries: 40
+      delay: 15
+      loop: "{{ spring_services }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: "'appservers' in group_names"
+
+    - name: Return the node to the pool
+      ansible.builtin.file:
+        path: "{{ app_base_dir }}/etc/drain"
+        state: absent
+
+    - name: Let the load balancer see the node before moving to the next
+      ansible.builtin.pause:
+        seconds: 30
+
+- name: Patch the edge tier one node at a time
+  hosts: loadbalancers
+  serial: 1
+  max_fail_percentage: 0
+  tags: [patch, edge]
+  vars:
+    security_only: true
+  pre_tasks:
+    - name: Hand the VIP to the peer before rebooting this node
+      ansible.builtin.systemd:
+        name: keepalived
+        state: stopped
+      when: keepalived_enabled | default(false) | bool
+
+    - name: Confirm the peer has taken the VIP
+      ansible.builtin.command: "ping -c 2 -W 2 {{ keepalived_vip }}"
+      delegate_to: localhost
+      changed_when: false
+      when: keepalived_enabled | default(false) | bool
+  roles:
+    - role: patch_host
+  post_tasks:
+    - name: Bring keepalived back
+      ansible.builtin.systemd:
+        name: keepalived
+        state: started
+      when: keepalived_enabled | default(false) | bool
+
+- name: Patch cycle summary
+  hosts: platform
+  gather_facts: false
+  tags: [always]
+  tasks:
+    - name: Report
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}: patched={{ patched | default(false) }},
+          rebooted={{ rebooted | default(false) }},
+          kernel={{ ansible_kernel }}

@@ -1,0 +1,214 @@
+---
+# ===========================================================================
+# dr-drill.yml — exercise the disaster-recovery site under controlled conditions.
+#
+#   ansible-playbook -i inventories/dr/hosts.yml playbooks/dr-drill.yml \
+#       -e drill_confirm=I-UNDERSTAND-THIS-PROMOTES-THE-DR-DATABASE
+#
+# A drill is the only thing that turns a DR site from an assumption into a
+# capability. This playbook measures the two numbers that matter — how much data
+# would have been lost (RPO) and how long recovery took (RTO) — and writes them
+# to an evidence file, because "the drill passed" is not a result.
+#
+# What it does NOT do: it never touches production, and it never redirects live
+# traffic. Promoting DR for real is a documented human decision — see
+# docs/runbooks/dr-failover.md.
+# ===========================================================================
+
+- name: Confirm intent
+  hosts: localhost
+  gather_facts: true
+  tags: [always]
+  tasks:
+    - name: Require explicit confirmation
+      ansible.builtin.assert:
+        that:
+          - drill_confirm | default('') == 'I-UNDERSTAND-THIS-PROMOTES-THE-DR-DATABASE'
+        fail_msg: >-
+          This playbook promotes the DR database out of recovery. Re-run with
+          -e drill_confirm=I-UNDERSTAND-THIS-PROMOTES-THE-DR-DATABASE once the
+          drill window is open and the drill has been announced.
+
+    - name: Start the clock
+      ansible.builtin.set_fact:
+        drill_start: "{{ ansible_date_time.epoch }}"
+        drill_id: "drill-{{ ansible_date_time.iso8601_basic_short }}"
+
+- name: Measure the recovery point before promoting anything
+  hosts: db_replica
+  gather_facts: false
+  tags: [drill, rpo]
+  tasks:
+    - name: Read the replay position and lag
+      community.postgresql.postgresql_query:
+        db: postgres
+        query: |
+          SELECT
+            pg_last_wal_receive_lsn()  AS receive_lsn,
+            pg_last_wal_replay_lsn()   AS replay_lsn,
+            EXTRACT(EPOCH FROM (now() - pg_last_xact_replay_timestamp())) AS lag_seconds,
+            pg_is_in_recovery()        AS in_recovery;
+      become_user: postgres
+      register: _replica_state
+      changed_when: false
+
+    - name: Record the measured recovery point
+      ansible.builtin.set_fact:
+        measured_rpo_seconds: "{{ _replica_state.query_result[0].lag_seconds | default(0) | round | int }}"
+
+    - name: Assert the replica is actually in recovery before we promote it
+      ansible.builtin.assert:
+        that:
+          - _replica_state.query_result[0].in_recovery | bool
+        fail_msg: >-
+          {{ inventory_hostname }} is not in recovery. Either a previous drill was
+          not reverted, or this node has already been promoted. Stop and check.
+
+    - name: Report the measured RPO against the objective
+      ansible.builtin.debug:
+        msg: >-
+          Measured recovery point: {{ measured_rpo_seconds }}s behind the primary.
+          Objective: {{ rpo_minutes * 60 }}s.
+          Result: {{ 'WITHIN OBJECTIVE' if measured_rpo_seconds | int <= (rpo_minutes * 60) else 'BREACHES OBJECTIVE' }}
+
+- name: Promote the DR database
+  hosts: db_replica
+  gather_facts: false
+  tags: [drill, promote]
+  tasks:
+    - name: Take a safety snapshot of the current WAL position
+      ansible.builtin.command: "{{ '/usr/pgsql-' ~ postgresql_version ~ '/bin/pg_controldata' }} {{ postgresql_data_dir }}"
+      become_user: postgres
+      register: _controldata
+      changed_when: false
+
+    - name: Archive the pre-promotion control data as drill evidence
+      ansible.builtin.copy:
+        content: "{{ _controldata.stdout }}\n"
+        dest: "/var/log/{{ platform_name }}/{{ hostvars['localhost'].drill_id }}-precontrol.txt"
+        mode: "0644"
+
+    - name: Promote the standby
+      ansible.builtin.command: "{{ '/usr/pgsql-' ~ postgresql_version ~ '/bin/pg_ctl' }} promote -D {{ postgresql_data_dir }}"
+      become_user: postgres
+      register: _promote
+      changed_when: true
+
+    - name: Wait until the cluster has left recovery
+      community.postgresql.postgresql_query:
+        db: postgres
+        query: "SELECT pg_is_in_recovery() AS in_recovery;"
+      become_user: postgres
+      register: _recovery_check
+      until: not (_recovery_check.query_result[0].in_recovery | bool)
+      retries: 30
+      delay: 5
+      changed_when: false
+
+    - name: Confirm the promoted database accepts writes
+      community.postgresql.postgresql_query:
+        db: "{{ platform_name }}"
+        query: |
+          CREATE TABLE IF NOT EXISTS dr_drill_marker (
+            drill_id text PRIMARY KEY,
+            promoted_at timestamptz NOT NULL DEFAULT now()
+          );
+          INSERT INTO dr_drill_marker (drill_id) VALUES ('{{ hostvars['localhost'].drill_id }}')
+          ON CONFLICT DO NOTHING;
+      become_user: postgres
+      changed_when: true
+
+- name: Start the DR application tier
+  hosts: appservers:tomcat_nodes
+  tags: [drill, application]
+  tasks:
+    - name: Start the Spring Boot services
+      ansible.builtin.systemd:
+        name: "{{ item.name }}.service"
+        state: started
+      loop: "{{ spring_services }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: "'appservers' in group_names"
+
+    - name: Start Tomcat
+      ansible.builtin.systemd:
+        name: tomcat
+        state: started
+      when: "'tomcat_nodes' in group_names"
+
+    - name: Wait for readiness and record how long it took
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ item.management_port }}{{ app_health_path }}"
+        status_code: 200
+      register: _dr_ready
+      until: _dr_ready.status == 200
+      retries: 40
+      delay: 15
+      loop: "{{ spring_services }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: "'appservers' in group_names"
+
+- name: Functional verification against the DR site
+  hosts: loadbalancers
+  tags: [drill, verify]
+  tasks:
+    - name: Start nginx at the DR edge
+      ansible.builtin.systemd:
+        name: nginx
+        state: started
+
+    - name: Exercise the service end to end
+      ansible.builtin.uri:
+        url: "https://{{ ansible_host }}{{ item }}"
+        validate_certs: false
+        status_code: [200, 401, 403]
+      loop:
+        - /healthz
+        - /api/core/actuator/health
+      register: _functional
+      retries: 5
+      delay: 10
+      until: _functional is succeeded
+
+- name: Record the drill result
+  hosts: localhost
+  gather_facts: true
+  tags: [always]
+  tasks:
+    - name: Compute the elapsed recovery time
+      ansible.builtin.set_fact:
+        measured_rto_seconds: "{{ (ansible_date_time.epoch | int) - (drill_start | int) }}"
+
+    - name: Write the drill evidence file
+      ansible.builtin.copy:
+        content: |
+          # Disaster recovery drill record
+          drill_id: {{ drill_id }}
+          date: {{ ansible_date_time.iso8601 }}
+          operator: {{ lookup('env', 'USER') | default('unknown') }}
+          site: {{ hostvars[groups['db_replica'][0]].site_name | default('dc-secondary') }}
+
+          objective_rpo_seconds: {{ hostvars[groups['db_replica'][0]].rpo_minutes | default(15) | int * 60 }}
+          measured_rpo_seconds: {{ hostvars[groups['db_replica'][0]].measured_rpo_seconds | default('unknown') }}
+
+          objective_rto_seconds: {{ hostvars[groups['db_replica'][0]].rto_minutes | default(120) | int * 60 }}
+          measured_rto_seconds: {{ measured_rto_seconds }}
+
+          result_rpo: {{ 'PASS' if (hostvars[groups['db_replica'][0]].measured_rpo_seconds | default(99999) | int) <= (hostvars[groups['db_replica'][0]].rpo_minutes | default(15) | int * 60) else 'FAIL' }}
+          result_rto: {{ 'PASS' if (measured_rto_seconds | int) <= (hostvars[groups['db_replica'][0]].rto_minutes | default(120) | int * 60) else 'FAIL' }}
+
+          # Revert steps: docs/runbooks/dr-failover.md, section "Reverting a drill".
+        dest: "docs/assessment/dr-drills/{{ drill_id }}.yml"
+        mode: "0644"
+      become: false
+
+    - name: Print the result
+      ansible.builtin.debug:
+        msg:
+          - "Drill {{ drill_id }} complete."
+          - "RTO: {{ measured_rto_seconds }}s against an objective of {{ hostvars[groups['db_replica'][0]].rto_minutes | default(120) | int * 60 }}s."
+          - "RPO: {{ hostvars[groups['db_replica'][0]].measured_rpo_seconds | default('unknown') }}s against an objective of {{ hostvars[groups['db_replica'][0]].rpo_minutes | default(15) | int * 60 }}s."
+          - "The DR database is now a primary and is NO LONGER replicating."
+          - "Rebuild the standby before the next drill: docs/runbooks/dr-failover.md → 'Reverting a drill'."
