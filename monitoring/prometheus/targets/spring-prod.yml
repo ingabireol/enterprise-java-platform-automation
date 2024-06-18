@@ -1,0 +1,23 @@
+- targets:
+    - 10.30.20.11:9081
+    - 10.30.20.12:9081
+    - 10.30.20.13:9081
+  labels:
+    service: efp-core
+    tier: application
+
+- targets:
+    - 10.30.20.11:9082
+    - 10.30.20.12:9082
+    - 10.30.20.13:9082
+  labels:
+    service: efp-reporting
+    tier: application
+
+- targets:
+    - 10.30.20.11:9083
+    - 10.30.20.12:9083
+    - 10.30.20.13:9083
+  labels:
+    service: efp-integration
+    tier: application

@@ -1,0 +1,43 @@
+# Host-level metrics targets. Generated from the Ansible inventory by
+# `make monitoring-targets`; checked in so the intended state is reviewable.
+- targets:
+    - 10.30.10.11:9100
+    - 10.30.10.12:9100
+  labels:
+    role: loadbalancer
+    tier: edge
+
+- targets:
+    - 10.30.20.11:9100
+    - 10.30.20.12:9100
+    - 10.30.20.13:9100
+  labels:
+    role: appserver
+    tier: application
+
+- targets:
+    - 10.30.20.21:9100
+    - 10.30.20.22:9100
+  labels:
+    role: tomcat
+    tier: application
+
+- targets:
+    - 10.30.30.11:9100
+    - 10.30.30.12:9100
+  labels:
+    role: database
+    tier: data
+
+- targets:
+    - 10.30.50.11:9100
+  labels:
+    role: backup
+    tier: data
+
+- targets:
+    - 10.40.30.11:9100
+  labels:
+    role: database
+    tier: data
+    site: dc-secondary

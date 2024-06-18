@@ -1,0 +1,95 @@
+# ---------------------------------------------------------------------------
+# Prometheus scrape configuration for the platform.
+#
+# Targets are listed by file rather than discovered, because the estate is a
+# known, fixed set of hosts and an unexplained new target should be a question,
+# not a silently scraped endpoint.
+# ---------------------------------------------------------------------------
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+  external_labels:
+    platform: efp
+    environment: prod
+    site: dc-primary
+
+rule_files:
+  - /etc/prometheus/alerts/*.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+      timeout: 10s
+
+scrape_configs:
+
+  # --- Prometheus itself ---------------------------------------------------
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # --- Host metrics --------------------------------------------------------
+  - job_name: node
+    file_sd_configs:
+      - files: ['/etc/prometheus/targets/nodes-*.yml']
+        refresh_interval: 5m
+    relabel_configs:
+      - source_labels: [__address__]
+        regex: '([^:]+):.*'
+        target_label: instance
+        replacement: '${1}'
+
+  # --- Spring Boot services via Micrometer --------------------------------
+  - job_name: spring-boot
+    metrics_path: /actuator/prometheus
+    file_sd_configs:
+      - files: ['/etc/prometheus/targets/spring-*.yml']
+        refresh_interval: 5m
+    metric_relabel_configs:
+      # Per-URI histograms explode cardinality on an API with path parameters.
+      # Keep the aggregate, drop the long tail.
+      - source_labels: [__name__, uri]
+        regex: 'http_server_requests_seconds_bucket;/api/.*/[0-9]+.*'
+        action: drop
+      - source_labels: [__name__]
+        regex: 'jvm_buffer_.*'
+        action: drop
+
+  # --- PostgreSQL ----------------------------------------------------------
+  - job_name: postgresql
+    file_sd_configs:
+      - files: ['/etc/prometheus/targets/postgres-*.yml']
+        refresh_interval: 5m
+
+  # --- Nginx ---------------------------------------------------------------
+  - job_name: nginx
+    metrics_path: /metrics
+    file_sd_configs:
+      - files: ['/etc/prometheus/targets/nginx-*.yml']
+        refresh_interval: 5m
+
+  # --- Blackbox: does the service answer from outside itself? --------------
+  # Internal health endpoints can report UP while users get errors. This probes
+  # the platform the way a user reaches it.
+  - job_name: blackbox-https
+    metrics_path: /probe
+    params:
+      module: [https_2xx]
+    static_configs:
+      - targets:
+          - https://efp.example.gov/healthz
+          - https://efp.example.gov/api/core/actuator/health
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  # --- Loki and the log pipeline itself ------------------------------------
+  - job_name: loki
+    static_configs:
+      - targets: ['loki:3100']
