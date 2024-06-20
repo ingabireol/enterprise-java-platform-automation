@@ -1,0 +1,172 @@
+---
+# ---------------------------------------------------------------------------
+# PostgreSQL alerts, including the replication and backup posture that the
+# recovery objectives depend on.
+# ---------------------------------------------------------------------------
+groups:
+
+  - name: postgresql
+    interval: 30s
+    rules:
+
+      - alert: PostgreSQLDown
+        expr: pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+          page: immediate
+        annotations:
+          summary: "PostgreSQL on {{ $labels.instance }} is not responding"
+          action: >-
+            `systemctl status postgresql-16` and the cluster log under
+            /var/lib/pgsql/16/data/log/. If the primary is gone and cannot be
+            recovered quickly, the DR failover procedure applies.
+          runbook: docs/runbooks/dr-failover.md
+
+      - alert: PostgreSQLConnectionsHigh
+        expr: |
+          sum by (instance) (pg_stat_activity_count)
+          / on (instance) pg_settings_max_connections > 0.80
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "{{ $labels.instance }} is at {{ $value | humanizePercentage }} of max_connections"
+          description: >-
+            When this reaches 100% the platform cannot open new sessions and even
+            administrative access can be refused.
+          action: >-
+            Identify the source: `SELECT application_name, state, count(*) FROM
+            pg_stat_activity GROUP BY 1,2 ORDER BY 3 DESC;`
+
+      - alert: PostgreSQLReplicationLagHigh
+        expr: pg_replication_lag_bytes > 134217728
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Replica {{ $labels.instance }} is {{ $value | humanizeBytes }} behind the primary"
+          description: >-
+            Replication lag is the recovery point objective made visible: this is
+            how much data a failover would lose right now.
+          action: >-
+            Check network throughput to the replica and whether the replica is
+            I/O bound. docs/runbooks/dr-failover.md#replication-lag
+
+      - alert: PostgreSQLReplicationStopped
+        expr: pg_stat_replication_pg_wal_lsn_diff == 0 and changes(pg_stat_replication_pg_wal_lsn_diff[10m]) == 0
+        for: 10m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "Replication to {{ $labels.instance }} has stopped advancing"
+          description: "The DR site is no longer receiving changes. RPO is growing without bound."
+          action: "Check the WAL sender on the primary and the receiver on the replica."
+          runbook: docs/runbooks/dr-failover.md
+
+      - alert: PostgreSQLLongRunningTransaction
+        expr: pg_stat_activity_max_tx_duration{state="idle in transaction"} > 600
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "A transaction has been idle for {{ $value | humanizeDuration }} on {{ $labels.instance }}"
+          description: >-
+            An idle-in-transaction session holds locks and prevents vacuum from
+            reclaiming dead tuples, which eventually bloats the table.
+          action: >-
+            Find it with pg_stat_activity and terminate it if it is orphaned;
+            then find the application path that leaked it.
+
+      - alert: PostgreSQLDeadlocks
+        expr: rate(pg_stat_database_deadlocks[10m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Deadlocks occurring on {{ $labels.instance }}"
+          action: "The cluster log records both sides of the deadlock; that pair identifies the code path."
+
+      - alert: PostgreSQLTableBloat
+        expr: |
+          pg_stat_user_tables_n_dead_tup > 100000
+          and pg_stat_user_tables_n_dead_tup / (pg_stat_user_tables_n_live_tup + 1) > 0.2
+        for: 1h
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "{{ $labels.relname }} on {{ $labels.instance }} has {{ $value }} dead tuples"
+          action: "Autovacuum is not keeping up. Check for a long transaction blocking it, then consider VACUUM FULL in a window."
+
+  - name: backup-posture
+    interval: 60s
+    rules:
+
+      - alert: BackupFailed
+        expr: platform_backup_success == 0
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "The last {{ $labels.mode }} backup of {{ $labels.database }} failed"
+          action: "Check /var/log/efp/backup.log and rerun manually. docs/runbooks/backup-restore.md"
+          runbook: docs/runbooks/backup-restore.md
+
+      - alert: BackupStale
+        # The failure mode this catches is the dangerous one: the job stopped
+        # running at all, so nothing is reporting a failure either.
+        expr: time() - platform_backup_last_success_timestamp_seconds{mode="full"} > 8 * 24 * 3600
+        for: 1h
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "No successful full backup for {{ $value | humanizeDuration }}"
+          description: >-
+            Either the timer has stopped or every run is failing silently.
+            `systemctl list-timers 'pg-backup*'`
+          runbook: docs/runbooks/backup-restore.md
+
+      - alert: BackupVerificationFailed
+        expr: platform_backup_verify_success == 0
+        for: 10m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "The scheduled restore verification failed"
+          description: >-
+            Backups are being produced but the most recent one could not be
+            restored. Treat the backup set as unproven until this is resolved.
+          runbook: docs/runbooks/backup-restore.md#verification-failure
+
+      - alert: BackupVerificationStale
+        expr: time() - platform_backup_verify_timestamp_seconds > 14 * 24 * 3600
+        for: 1h
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Backups have not been restore-tested for over 14 days"
+          action: "Run `make backup-verify ENV=prod` and find out why the timer stopped."
+
+      - alert: WALArchiveNotAdvancing
+        expr: changes(platform_wal_archive_segments[1h]) == 0
+        for: 1h
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "The WAL archive has not received a new segment in an hour"
+          description: >-
+            Point-in-time recovery depends on a continuous WAL archive. A gap
+            here means recovery can only reach the last base backup.
+          action: "Check archive_command failures in the PostgreSQL log."

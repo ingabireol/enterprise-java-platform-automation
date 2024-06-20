@@ -1,0 +1,184 @@
+---
+# ---------------------------------------------------------------------------
+# Platform availability and host alerts.
+#
+# Two rules govern what is allowed to be an alert here:
+#   1. Every alert must be actionable — it names what to do, not just what is
+#      wrong. An alert with no action is a dashboard panel.
+#   2. `for:` durations are chosen so that a transient blip does not page anyone.
+#      An alert that fires and clears by itself teaches people to ignore alerts.
+# ---------------------------------------------------------------------------
+groups:
+
+  - name: platform-availability
+    interval: 30s
+    rules:
+
+      - alert: HostDown
+        expr: up{job="node"} == 0
+        for: 3m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "{{ $labels.instance }} is not responding to scrapes"
+          description: >-
+            No metrics from {{ $labels.instance }} ({{ $labels.role }}) for 3 minutes.
+            Either the host is down or node_exporter has stopped.
+          action: >-
+            Check reachability, then `systemctl status node_exporter`. If the host
+            is genuinely down and it is an application node, confirm the load
+            balancer has taken it out of the pool before investigating further.
+          runbook: docs/runbooks/incident-response.md#host-down
+
+      - alert: ServiceDown
+        expr: up{job="spring-boot"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "{{ $labels.service }} on {{ $labels.instance }} is not responding"
+          description: "The actuator endpoint for {{ $labels.service }} has been unreachable for 2 minutes."
+          action: >-
+            `journalctl -u {{ $labels.service }} -n 100`. If the JVM exited,
+            check for an OOM kill in the kernel log before restarting.
+          runbook: docs/runbooks/incident-response.md#service-down
+
+      - alert: AllApplicationNodesDown
+        expr: count(up{job="spring-boot", service="efp-core"} == 1) == 0
+        for: 1m
+        labels:
+          severity: critical
+          team: platform
+          page: immediate
+        annotations:
+          summary: "Every efp-core instance is down — the platform is unavailable"
+          description: "No healthy efp-core instance remains in any node."
+          action: >-
+            This is a full outage. Follow docs/runbooks/incident-response.md from
+            the top; consider a DR failover if the cause is site-level.
+          runbook: docs/runbooks/dr-failover.md
+
+      - alert: EndpointProbeFailing
+        expr: probe_success == 0
+        for: 3m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "{{ $labels.instance }} is failing its external probe"
+          description: >-
+            The platform is not answering correctly from outside itself, even
+            though internal health checks may be passing.
+          action: "Check the edge tier first: nginx, TLS certificate, and the VIP."
+          runbook: docs/runbooks/incident-response.md#edge
+
+  - name: host-resources
+    interval: 30s
+    rules:
+
+      - alert: DiskSpaceLow
+        expr: |
+          100 - ((node_filesystem_avail_bytes{fstype!~"tmpfs|squashfs"}
+                  / node_filesystem_size_bytes{fstype!~"tmpfs|squashfs"}) * 100) > 85
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "{{ $labels.mountpoint }} on {{ $labels.instance }} is {{ $value | humanize }}% full"
+          action: >-
+            `du -xh {{ $labels.mountpoint }} | sort -rh | head -20`. Common causes:
+            an unrotated log, a heap dump, or an orphaned release directory.
+          runbook: docs/runbooks/incident-response.md#disk-space
+
+      - alert: DiskSpaceCritical
+        expr: |
+          100 - ((node_filesystem_avail_bytes{fstype!~"tmpfs|squashfs"}
+                  / node_filesystem_size_bytes{fstype!~"tmpfs|squashfs"}) * 100) > 92
+        for: 2m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "{{ $labels.mountpoint }} on {{ $labels.instance }} is {{ $value | humanize }}% full"
+          description: >-
+            PostgreSQL stops accepting writes when its filesystem fills, and the
+            recovery from that is considerably more expensive than acting now.
+          action: "Free space immediately. docs/runbooks/incident-response.md#disk-space"
+
+      - alert: DiskWillFillIn24Hours
+        # Trend beats threshold: this fires while there is still time to act.
+        expr: |
+          predict_linear(node_filesystem_avail_bytes{fstype!~"tmpfs|squashfs"}[6h], 24*3600) < 0
+          and node_filesystem_avail_bytes{fstype!~"tmpfs|squashfs"} / node_filesystem_size_bytes < 0.4
+        for: 30m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "{{ $labels.mountpoint }} on {{ $labels.instance }} is projected to fill within 24 hours"
+          action: "Run scripts/monitoring/capacity_report.sh and find what is growing."
+
+      - alert: MemoryPressure
+        expr: |
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 90
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "{{ $labels.instance }} is at {{ $value | humanize }}% memory use"
+          action: "Check JVM heap sizing against host memory; see docs/runbooks/incident-response.md#memory"
+
+      - alert: SwapInUse
+        expr: |
+          node_memory_SwapTotal_bytes > 0
+          and (node_memory_SwapTotal_bytes - node_memory_SwapFree_bytes) > 536870912
+        for: 15m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "{{ $labels.instance }} is swapping ({{ $value | humanizeBytes }})"
+          description: >-
+            A swapping JVM produces latency that looks like an application fault.
+            The usual cause is heap plus native memory exceeding what the host has.
+          action: "Review -Xmx against total RAM. docs/runbooks/incident-response.md#memory"
+
+      - alert: HighCPULoad
+        expr: |
+          node_load15 / count(count(node_cpu_seconds_total) by (cpu)) without (cpu) > 2
+        for: 20m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "{{ $labels.instance }} sustained load is {{ $value | humanize }}× CPU count"
+          action: "`top -H` to find the thread; capture a thread dump before restarting anything."
+
+      - alert: ClockDrift
+        expr: abs(node_timex_offset_seconds) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "{{ $labels.instance }} clock is {{ $value | humanize }}s from its time source"
+          description: >-
+            Transaction ordering, TLS validity and log correlation all assume the
+            clocks agree.
+          action: "`chronyc tracking` and `chronyc sources -v`."
+
+      - alert: UnexpectedReboot
+        expr: node_time_seconds - node_boot_time_seconds < 600
+        for: 1m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "{{ $labels.instance }} rebooted less than 10 minutes ago"
+          action: >-
+            If this was not a planned patch reboot, check `last -x reboot` and the
+            kernel log for a panic or a hardware fault.

@@ -1,0 +1,97 @@
+---
+# ---------------------------------------------------------------------------
+# Security and compliance posture alerts. These are not intrusion detection —
+# they are the conditions that make an intrusion cheaper.
+# ---------------------------------------------------------------------------
+groups:
+
+  - name: security-posture
+    interval: 60s
+    rules:
+
+      - alert: TLSCertificateExpiringSoon
+        expr: platform_tls_days_until_expiry < 30
+        for: 1h
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "TLS certificate for {{ $labels.endpoint }} expires in {{ $value }} day(s)"
+          action: "docs/runbooks/tls-certificate-rotation.md"
+
+      - alert: TLSCertificateExpiringCritical
+        expr: platform_tls_days_until_expiry < 14
+        for: 10m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "TLS certificate for {{ $labels.endpoint }} expires in {{ $value }} day(s)"
+          description: >-
+            An expired certificate is a total outage that arrives on a predictable
+            schedule, which makes it the least excusable kind.
+          runbook: docs/runbooks/tls-certificate-rotation.md
+
+      - alert: CriticalSecurityUpdatesPending
+        expr: platform_security_updates_critical > 0
+        for: 24h
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "{{ $value }} critical security update(s) outstanding on {{ $labels.instance }}"
+          action: "docs/runbooks/patching.md § Out-of-cycle patching"
+
+      - alert: RebootPendingTooLong
+        expr: platform_reboot_required == 1
+        for: 7d
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "{{ $labels.instance }} has been waiting for a reboot for over 7 days"
+          description: "Patches have been installed but the running kernel still carries the old code."
+
+      - alert: ConfigurationDrift
+        expr: platform_config_drift_files > 0
+        for: 1h
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "{{ $value }} configuration file(s) changed outside Ansible on {{ $labels.instance }}"
+          description: >-
+            Either someone made a manual change, or an unmanaged process rewrote
+            a managed file. Both matter: the next converge will revert it, possibly
+            during an incident.
+          action: "Check /var/log/efp/backup.log for the drift diff, then reconcile into Ansible."
+
+      - alert: AccountAuditFindings
+        expr: platform_account_audit_findings > 0
+        for: 6h
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "{{ $value }} account audit finding(s) on {{ $labels.instance }}"
+          action: "Run scripts/security/account_audit.sh on the host for the detail."
+
+      - alert: ExcessiveAuthenticationFailures
+        expr: rate(node_systemd_unit_state{name="sshd.service"}[5m]) > 0 and increase(promtail_custom_sshd_failures_total[10m]) > 50
+        for: 5m
+        labels:
+          severity: warning
+          team: security
+        annotations:
+          summary: "{{ $value }} SSH authentication failures on {{ $labels.instance }} in 10 minutes"
+          action: "Check fail2ban status; confirm the source is external and not a misconfigured automation account."
+
+      - alert: HealthCheckFailing
+        expr: platform_health_overall >= 2
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "The platform health check reports UNHEALTHY on {{ $labels.instance }}"
+          action: "Run scripts/monitoring/health_check.sh on the host to see which check failed."

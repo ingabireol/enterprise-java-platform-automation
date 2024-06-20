@@ -1,0 +1,130 @@
+---
+# ---------------------------------------------------------------------------
+# JVM and application-level alerts, driven by Micrometer metrics.
+# ---------------------------------------------------------------------------
+groups:
+
+  - name: jvm
+    interval: 30s
+    rules:
+
+      - alert: JVMHeapPressure
+        expr: |
+          sum by (service, instance) (jvm_memory_used_bytes{area="heap"})
+          / sum by (service, instance) (jvm_memory_max_bytes{area="heap"}) > 0.90
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "{{ $labels.service }} on {{ $labels.instance }} is using {{ $value | humanizePercentage }} of its heap"
+          description: >-
+            Sustained heap use above 90% usually means either a leak or a heap
+            that is too small for the workload. The GC time alert distinguishes them.
+          action: >-
+            Check GC overhead first. If GC time is also high it is a real memory
+            problem; capture a heap dump with `jcmd <pid> GC.heap_dump`.
+          runbook: docs/runbooks/incident-response.md#jvm
+
+      - alert: JVMGCOverhead
+        # The classic pre-OOM signature: the JVM is alive but spending its time
+        # collecting garbage instead of serving requests.
+        expr: |
+          sum by (service, instance) (rate(jvm_gc_pause_seconds_sum[5m]))
+          / sum by (service, instance) (rate(jvm_gc_pause_seconds_count[5m]) > 0) > 0.10
+        for: 10m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "{{ $labels.service }} is spending {{ $value | humanizePercentage }} of its time in GC"
+          action: >-
+            Capture a heap dump now, then restart the instance with
+            scripts/ops/rolling_restart.sh --reason "gc thrashing".
+          runbook: docs/runbooks/incident-response.md#jvm
+
+      - alert: JVMThreadCountHigh
+        expr: jvm_threads_live_threads > 800
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "{{ $labels.service }} on {{ $labels.instance }} has {{ $value }} live threads"
+          description: "Usually a thread pool that is not bounded, or blocked threads accumulating."
+          action: "`jcmd <pid> Thread.print` and look for a common blocking stack."
+
+      - alert: JVMFileDescriptorsHigh
+        expr: process_files_open_files / process_files_max_files > 0.80
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "{{ $labels.service }} has used {{ $value | humanizePercentage }} of its file descriptors"
+          action: "Check for leaked connections or unclosed streams; `ls -l /proc/<pid>/fd | head`."
+
+  - name: application-behaviour
+    interval: 30s
+    rules:
+
+      - alert: HighErrorRate
+        expr: |
+          sum by (service) (rate(http_server_requests_seconds_count{status=~"5.."}[5m]))
+          / sum by (service) (rate(http_server_requests_seconds_count[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "{{ $labels.service }} is returning {{ $value | humanizePercentage }} server errors"
+          action: >-
+            Check whether this started at a deployment: compare against the
+            platform_deployment_timestamp_seconds annotation on the dashboard.
+            If so, roll back with scripts/ops/rollback.sh.
+          runbook: docs/runbooks/incident-response.md#error-rate
+
+      - alert: LatencyDegraded
+        expr: |
+          histogram_quantile(0.99,
+            sum by (service, le) (rate(http_server_requests_seconds_bucket[5m]))
+          ) > 2
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "{{ $labels.service }} p99 latency is {{ $value | humanizeDuration }}"
+          description: "p99 above 2s for 10 minutes. Users notice this well before it becomes an error."
+          action: >-
+            Work down the stack: GC pauses → database wait → downstream integration.
+            The Platform Overview dashboard has all three side by side.
+
+      - alert: ConnectionPoolExhausted
+        expr: |
+          hikaricp_connections_pending > 0
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "{{ $labels.service }} on {{ $labels.instance }} has threads waiting for a database connection"
+          description: >-
+            Requests are queuing for connections. This usually cascades into
+            timeouts across every endpoint that touches the database.
+          action: >-
+            Check for long-running queries on the database first; enlarging the
+            pool without finding the slow query just moves the queue.
+          runbook: docs/runbooks/incident-response.md#connection-pool
+
+      - alert: DeploymentInProgressTooLong
+        expr: |
+          time() - platform_deployment_timestamp_seconds < 3600
+          and sum by (service) (rate(http_server_requests_seconds_count{status=~"5.."}[5m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "Errors observed within an hour of the last deployment"
+          action: "Consider rolling back: scripts/ops/rollback.sh"
