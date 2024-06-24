@@ -1,0 +1,18 @@
+{{/* Alert notification body. Written for someone reading it on a phone at 02:00:
+     what broke, where, what to do, and the link to the procedure. */}}
+
+{{ define "platform.text" }}
+{{ range .Alerts }}
+{{ if eq .Status "firing" }}FIRING{{ else }}RESOLVED{{ end }}: {{ .Labels.alertname }}
+
+  Summary   : {{ .Annotations.summary }}
+  Instance  : {{ .Labels.instance }}{{ if .Labels.service }} ({{ .Labels.service }}){{ end }}
+  Severity  : {{ .Labels.severity }}
+  Since     : {{ .StartsAt.Format "2006-01-02 15:04:05 MST" }}
+
+{{ if .Annotations.description }}  Detail    : {{ .Annotations.description }}
+{{ end }}{{ if .Annotations.action }}  Action    : {{ .Annotations.action }}
+{{ end }}{{ if .Annotations.runbook }}  Runbook   : {{ .Annotations.runbook }}
+{{ end }}
+{{ end }}
+{{ end }}

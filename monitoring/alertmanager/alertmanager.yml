@@ -1,0 +1,94 @@
+# ---------------------------------------------------------------------------
+# Alertmanager routing.
+#
+# The routing tree encodes an operational judgement: what is worth waking
+# someone for, what can wait for business hours, and what should be grouped so
+# that one incident produces one notification rather than forty.
+# ---------------------------------------------------------------------------
+global:
+  resolve_timeout: 5m
+  smtp_smarthost: 'smtp.example.gov:587'
+  smtp_from: 'alertmanager@efp.example.gov'
+  smtp_require_tls: true
+
+templates:
+  - '/etc/alertmanager/templates/*.tmpl'
+
+route:
+  # Group by the thing that identifies an incident, not by the alert name: a
+  # failing host produces a dozen different alerts and they belong together.
+  group_by: ['alertname', 'instance', 'service']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: platform-email
+
+  routes:
+    # --- Immediate page: full outage or data at risk ---------------------
+    - matchers:
+        - page = "immediate"
+      receiver: platform-oncall
+      group_wait: 0s
+      repeat_interval: 30m
+      continue: true
+
+    # --- Critical -------------------------------------------------------
+    - matchers:
+        - severity = "critical"
+      receiver: platform-oncall
+      group_wait: 10s
+      repeat_interval: 1h
+
+    # --- Security ---------------------------------------------------------
+    - matchers:
+        - team = "security"
+      receiver: security-team
+      repeat_interval: 12h
+
+    # --- Warnings: batched, business hours --------------------------------
+    - matchers:
+        - severity = "warning"
+      receiver: platform-email
+      group_wait: 5m
+      group_interval: 30m
+      repeat_interval: 24h
+
+inhibit_rules:
+  # A host that is down will also fail every service on it. Report the cause,
+  # suppress the consequences.
+  - source_matchers: [alertname = "HostDown"]
+    target_matchers: [severity =~ "warning|critical"]
+    equal: ['instance']
+
+  # A full outage subsumes every per-service alert.
+  - source_matchers: [alertname = "AllApplicationNodesDown"]
+    target_matchers: [alertname =~ "ServiceDown|HighErrorRate|LatencyDegraded"]
+
+  # A down database explains connection pool exhaustion.
+  - source_matchers: [alertname = "PostgreSQLDown"]
+    target_matchers: [alertname = "ConnectionPoolExhausted"]
+
+  # Critical supersedes warning for the same condition.
+  - source_matchers: [severity = "critical"]
+    target_matchers: [severity = "warning"]
+    equal: ['alertname', 'instance']
+
+receivers:
+  - name: platform-email
+    email_configs:
+      - to: 'platform-ops@example.gov'
+        send_resolved: true
+        headers:
+          Subject: '[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }} — {{ .CommonLabels.instance }}'
+
+  - name: platform-oncall
+    email_configs:
+      - to: 'platform-oncall@example.gov'
+        send_resolved: true
+    # webhook_configs / pagerduty_configs go here in a real deployment; the
+    # email path is kept as the fallback that works when the integration does not.
+
+  - name: security-team
+    email_configs:
+      - to: 'security@example.gov'
+        send_resolved: true
