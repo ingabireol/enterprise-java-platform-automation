@@ -1,0 +1,542 @@
+{
+  "uid": "efp-platform-overview",
+  "title": "Platform Overview",
+  "description": "Service health at a glance: availability, request rate, error rate, latency. Colour conventions: the four categorical hues (#4a7fe8 blue, #c2531f orange, #10a17a green, #8b5bd6 purple) are assigned to services in a fixed order and never cycled, so a service keeps its colour when a filter changes the series count. Green/amber/red appear ONLY as threshold states, never as a series colour. The palette is validated for colour-vision deficiency against both the light and dark surfaces.",
+  "tags": ["platform", "overview", "sre"],
+  "timezone": "Africa/Kigali",
+  "editable": false,
+  "schemaVersion": 39,
+  "version": 4,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "environment",
+        "label": "Environment",
+        "type": "custom",
+        "query": "prod,test,dev,dr",
+        "current": { "text": "prod", "value": "prod" },
+        "options": []
+      },
+      {
+        "name": "service",
+        "label": "Service",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": "label_values(http_server_requests_seconds_count{environment=\"$environment\"}, service)",
+        "multi": true,
+        "includeAll": true,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "annotations": {
+    "list": [
+      {
+        "name": "Deployments",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "enable": true,
+        "iconColor": "#8b5bd6",
+        "expr": "changes(platform_deployment_timestamp_seconds[5m]) > 0",
+        "titleFormat": "Deployment",
+        "textFormat": "{{version}} on {{instance}}"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Headline",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false
+    },
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Availability (30d)",
+      "description": "Share of external probes that succeeded. This is the number the service level objective is written against, so it is the first thing on the page.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 4, "x": 0, "y": 1 },
+      "targets": [
+        { "refId": "A", "expr": "avg_over_time(probe_success{instance=~\"https://.*\"}[30d])", "instant": true }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "textMode": "value",
+        "graphMode": "none",
+        "colorMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 3,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red",   "value": null },
+              { "color": "orange","value": 0.995 },
+              { "color": "green", "value": 0.999 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Healthy app nodes",
+      "description": "Instances currently passing their readiness probe, out of the configured total.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 4, "x": 4, "y": 1 },
+      "targets": [
+        { "refId": "A", "expr": "count(up{job=\"spring-boot\", environment=\"$environment\", service=\"efp-core\"} == 1)", "instant": true }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value_and_name", "graphMode": "none", "colorMode": "value" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red",    "value": null },
+              { "color": "orange", "value": 2 },
+              { "color": "green",  "value": 3 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Error rate (5m)",
+      "description": "Share of requests returning 5xx. The threshold matches the alert in prometheus/alerts/application.yml so the dashboard and the pager agree.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 4, "x": 8, "y": 1 },
+      "targets": [
+        { "refId": "A", "expr": "sum(rate(http_server_requests_seconds_count{environment=\"$environment\", status=~\"5..\"}[5m])) / sum(rate(http_server_requests_seconds_count{environment=\"$environment\"}[5m]))", "instant": true }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "graphMode": "area", "colorMode": "value" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": null },
+              { "color": "orange", "value": 0.01 },
+              { "color": "red",    "value": 0.05 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "p99 latency (5m)",
+      "description": "99th percentile request duration across all services.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 4, "x": 12, "y": 1 },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_requests_seconds_bucket{environment=\"$environment\"}[5m])))", "instant": true }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "graphMode": "area", "colorMode": "value" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 2,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": null },
+              { "color": "orange", "value": 1 },
+              { "color": "red",    "value": 2 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Backup age",
+      "description": "Time since the last verified full backup. Amber past a day, red past the point where the recovery point objective is at risk.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 4, "x": 16, "y": 1 },
+      "targets": [
+        { "refId": "A", "expr": "time() - platform_backup_last_success_timestamp_seconds{mode=\"full\"}", "instant": true }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "graphMode": "none", "colorMode": "value" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": null },
+              { "color": "orange", "value": 90000 },
+              { "color": "red",    "value": 691200 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Replication lag",
+      "description": "Bytes the disaster-recovery replica is behind the primary — the recovery point objective, measured rather than assumed.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 4, "x": 20, "y": 1 },
+      "targets": [
+        { "refId": "A", "expr": "max(pg_replication_lag_bytes{site=\"dc-secondary\"})", "instant": true }
+      ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "graphMode": "area", "colorMode": "value" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": null },
+              { "color": "orange", "value": 67108864 },
+              { "color": "red",    "value": 134217728 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "Traffic and errors",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 6 },
+      "collapsed": false
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Request rate by service",
+      "description": "Requests per second. Each service keeps a fixed colour across every panel on this dashboard.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 7 },
+      "targets": [
+        { "refId": "A", "expr": "sum by (service) (rate(http_server_requests_seconds_count{environment=\"$environment\", service=~\"$service\"}[5m]))", "legendFormat": "{{service}}" }
+      ],
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max", "lastNotNull"], "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisSoftMin": 0
+          },
+          "color": { "mode": "palette-classic" }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "efp-core" },        "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#4a7fe8" } }] },
+          { "matcher": { "id": "byName", "options": "efp-reporting" },   "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#c2531f" } }] },
+          { "matcher": { "id": "byName", "options": "efp-integration" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#10a17a" } }] },
+          { "matcher": { "id": "byName", "options": "efp-ui" },          "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#8b5bd6" } }] }
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Error rate by service",
+      "description": "Share of requests returning 5xx, per service. Plotted on its own panel rather than sharing an axis with request rate — two measures of different scale never belong on one chart.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 7 },
+      "targets": [
+        { "refId": "A", "expr": "sum by (service) (rate(http_server_requests_seconds_count{environment=\"$environment\", service=~\"$service\", status=~\"5..\"}[5m])) / sum by (service) (rate(http_server_requests_seconds_count{environment=\"$environment\", service=~\"$service\"}[5m]))", "legendFormat": "{{service}}" }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "max": 0.2,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "axisSoftMin": 0,
+            "thresholdsStyle": { "mode": "dashed" }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "transparent", "value": null },
+              { "color": "red", "value": 0.05 }
+            ]
+          }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "efp-core" },        "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#4a7fe8" } }] },
+          { "matcher": { "id": "byName", "options": "efp-reporting" },   "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#c2531f" } }] },
+          { "matcher": { "id": "byName", "options": "efp-integration" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#10a17a" } }] }
+        ]
+      }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Latency percentiles (all services)",
+      "description": "p50, p95 and p99 together. The gap between them is the story: a p99 that pulls away from p50 means a subset of requests is doing something different, not that everything got slower.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+      "targets": [
+        { "refId": "A", "expr": "histogram_quantile(0.50, sum by (le) (rate(http_server_requests_seconds_bucket{environment=\"$environment\", service=~\"$service\"}[5m])))", "legendFormat": "p50" },
+        { "refId": "B", "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{environment=\"$environment\", service=~\"$service\"}[5m])))", "legendFormat": "p95" },
+        { "refId": "C", "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_requests_seconds_bucket{environment=\"$environment\", service=~\"$service\"}[5m])))", "legendFormat": "p99" }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "never", "axisSoftMin": 0 }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "p50" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#10a17a" } }] },
+          { "matcher": { "id": "byName", "options": "p95" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#4a7fe8" } }] },
+          { "matcher": { "id": "byName", "options": "p99" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#c2531f" } }, { "id": "custom.lineWidth", "value": 2 }] }
+        ]
+      }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "HTTP status distribution",
+      "description": "Stacked by status class. A 4xx surge is usually a client or integration change; a 5xx surge is ours.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
+      "targets": [
+        { "refId": "A", "expr": "sum by (outcome) (rate(http_server_requests_seconds_count{environment=\"$environment\", service=~\"$service\"}[5m]))", "legendFormat": "{{outcome}}" }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 85,
+            "lineWidth": 0,
+            "stacking": { "mode": "normal" },
+            "barAlignment": 0,
+            "axisSoftMin": 0
+          }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "SUCCESS" },       "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#10a17a" } }] },
+          { "matcher": { "id": "byName", "options": "CLIENT_ERROR" },  "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#c2531f" } }] },
+          { "matcher": { "id": "byName", "options": "SERVER_ERROR" },  "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#8b5bd6" } }] }
+        ]
+      }
+    },
+    {
+      "type": "row",
+      "title": "JVM",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 },
+      "collapsed": false
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Heap utilisation by instance",
+      "description": "Used heap as a share of max. Sustained high utilisation is only a problem when GC overhead rises with it — the panel beside this one answers that.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "targets": [
+        { "refId": "A", "expr": "sum by (service, instance) (jvm_memory_used_bytes{environment=\"$environment\", area=\"heap\", service=~\"$service\"}) / sum by (service, instance) (jvm_memory_max_bytes{environment=\"$environment\", area=\"heap\", service=~\"$service\"})", "legendFormat": "{{service}} · {{instance}}" }
+      ],
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["max", "lastNotNull"], "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "thresholdsStyle": { "mode": "dashed" }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "transparent", "value": null },
+              { "color": "red", "value": 0.9 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "GC overhead",
+      "description": "Share of wall-clock time spent in garbage collection. Above 10% the JVM is collecting rather than serving — the signature that precedes an out-of-memory failure.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "targets": [
+        { "refId": "A", "expr": "sum by (service, instance) (rate(jvm_gc_pause_seconds_sum{environment=\"$environment\", service=~\"$service\"}[5m]))", "legendFormat": "{{service}} · {{instance}}" }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "thresholdsStyle": { "mode": "dashed" }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "transparent", "value": null },
+              { "color": "red", "value": 0.1 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "Database",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 },
+      "collapsed": false
+    },
+    {
+      "id": 30,
+      "type": "timeseries",
+      "title": "Connection pool utilisation",
+      "description": "Active and pending HikariCP connections per service. Any sustained pending count means requests are queueing for the database.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 33 },
+      "targets": [
+        { "refId": "A", "expr": "sum by (service) (hikaricp_connections_active{environment=\"$environment\"})", "legendFormat": "{{service}} active" },
+        { "refId": "B", "expr": "sum by (service) (hikaricp_connections_pending{environment=\"$environment\"})", "legendFormat": "{{service}} pending" }
+      ],
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 5, "showPoints": "never", "axisSoftMin": 0 } },
+        "overrides": [
+          { "matcher": { "id": "byRegexp", "options": ".*pending" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#c2531f" } }] }
+        ]
+      }
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "PostgreSQL sessions",
+      "description": "Sessions by state. Growth in 'idle in transaction' is the early warning for lock contention and vacuum starvation.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 33 },
+      "targets": [
+        { "refId": "A", "expr": "sum by (state) (pg_stat_activity_count{environment=\"$environment\"})", "legendFormat": "{{state}}" }
+      ],
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "bars", "fillOpacity": 85, "lineWidth": 0, "stacking": { "mode": "normal" }, "axisSoftMin": 0 }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "active" },             "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#4a7fe8" } }] },
+          { "matcher": { "id": "byName", "options": "idle" },               "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#10a17a" } }] },
+          { "matcher": { "id": "byName", "options": "idle in transaction" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#c2531f" } }] }
+        ]
+      }
+    },
+    {
+      "id": 32,
+      "type": "timeseries",
+      "title": "Replication lag",
+      "description": "Bytes behind the primary, per replica. The dashed line is the alert threshold in prometheus/alerts/database.yml.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 33 },
+      "targets": [
+        { "refId": "A", "expr": "pg_replication_lag_bytes{environment=\"$environment\"}", "legendFormat": "{{instance}} ({{site}})" }
+      ],
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "never", "axisSoftMin": 0,
+            "thresholdsStyle": { "mode": "dashed" }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "transparent", "value": null },
+              { "color": "red", "value": 134217728 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "Logs",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 41 },
+      "collapsed": false
+    },
+    {
+      "id": 40,
+      "type": "logs",
+      "title": "Recent application errors",
+      "description": "Live tail of ERROR and FATAL lines from every application node, so an alert can be taken from symptom to stack trace on one screen.",
+      "datasource": { "type": "loki", "uid": "loki" },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 42 },
+      "targets": [
+        { "refId": "A", "expr": "{job=\"application\", environment=\"$environment\"} |= \"ERROR\" or \"FATAL\"" }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "dedupStrategy": "signature"
+      }
+    }
+  ]
+}

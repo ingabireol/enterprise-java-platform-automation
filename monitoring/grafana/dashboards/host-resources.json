@@ -1,0 +1,156 @@
+{
+  "uid": "efp-host-resources",
+  "title": "Host Resources",
+  "description": "Infrastructure-level view: CPU, memory, disk, network and filesystem projections for every host in the estate. Used for capacity planning and as the second stop after an application alert, to answer whether the cause is below the application.",
+  "tags": ["platform", "infrastructure", "capacity"],
+  "timezone": "Africa/Kigali",
+  "editable": false,
+  "schemaVersion": 39,
+  "version": 2,
+  "refresh": "1m",
+  "time": { "from": "now-24h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "instance",
+        "label": "Host",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": "label_values(node_uname_info, instance)",
+        "multi": true,
+        "includeAll": true,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "CPU utilisation",
+      "description": "Non-idle CPU per host.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        { "refId": "A", "expr": "100 - (avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\", instance=~\"$instance\"}[5m])) * 100)", "legendFormat": "{{instance}}" }
+      ],
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"], "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "min": 0, "max": 100,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 5, "showPoints": "never", "thresholdsStyle": { "mode": "dashed" } },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "transparent", "value": null }, { "color": "red", "value": 85 }] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Memory utilisation",
+      "description": "Used memory as a share of total, computed from MemAvailable so page cache is not counted as pressure.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        { "refId": "A", "expr": "(1 - (node_memory_MemAvailable_bytes{instance=~\"$instance\"} / node_memory_MemTotal_bytes{instance=~\"$instance\"})) * 100", "legendFormat": "{{instance}}" }
+      ],
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"], "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "min": 0, "max": 100,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 5, "showPoints": "never", "thresholdsStyle": { "mode": "dashed" } },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "transparent", "value": null }, { "color": "red", "value": 90 }] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "type": "bargauge",
+      "title": "Filesystem utilisation",
+      "description": "Current fill level per mount point. Horizontal bars because the comparison here is between named things, not over time.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        { "refId": "A", "expr": "100 - (node_filesystem_avail_bytes{fstype!~\"tmpfs|squashfs\", instance=~\"$instance\"} / node_filesystem_size_bytes{fstype!~\"tmpfs|squashfs\", instance=~\"$instance\"} * 100)", "legendFormat": "{{instance}} {{mountpoint}}", "instant": true }
+      ],
+      "options": { "orientation": "horizontal", "displayMode": "gradient", "showUnfilled": true, "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "min": 0, "max": 100,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "orange", "value": 80 },
+            { "color": "red", "value": 90 }
+          ]}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Disk I/O wait",
+      "description": "Time the CPU spends blocked on storage. A rise here explains application latency that has no corresponding rise in CPU or GC.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        { "refId": "A", "expr": "avg by (instance) (rate(node_cpu_seconds_total{mode=\"iowait\", instance=~\"$instance\"}[5m])) * 100", "legendFormat": "{{instance}}" }
+      ],
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 5, "showPoints": "never", "axisSoftMin": 0 } },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Network throughput",
+      "description": "Received and transmitted bytes per second. Transmit is drawn negative so the two directions are readable on one axis without a second scale.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+      "targets": [
+        { "refId": "A", "expr": "rate(node_network_receive_bytes_total{device!~\"lo|veth.*\", instance=~\"$instance\"}[5m]) * 8", "legendFormat": "{{instance}} rx" },
+        { "refId": "B", "expr": "-rate(node_network_transmit_bytes_total{device!~\"lo|veth.*\", instance=~\"$instance\"}[5m]) * 8", "legendFormat": "{{instance}} tx" }
+      ],
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": {
+        "defaults": { "unit": "bps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 5, "showPoints": "never" } },
+        "overrides": [
+          { "matcher": { "id": "byRegexp", "options": ".*tx" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#c2531f" } }] },
+          { "matcher": { "id": "byRegexp", "options": ".*rx" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#4a7fe8" } }] }
+        ]
+      }
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Filesystem projections",
+      "description": "Linear projection of when each filesystem fills at its current growth rate. A projection inside 30 days is a capacity action, not an alert.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
+      "targets": [
+        { "refId": "A", "expr": "predict_linear(node_filesystem_avail_bytes{fstype!~\"tmpfs|squashfs\", instance=~\"$instance\"}[24h], 30*24*3600)", "instant": true, "format": "table" }
+      ],
+      "options": { "showHeader": true, "sortBy": [{ "displayName": "Value", "desc": false }] },
+      "fieldConfig": {
+        "defaults": { "unit": "bytes", "custom": { "align": "auto" } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Value" },
+            "properties": [
+              { "id": "displayName", "value": "Projected free in 30 days" },
+              { "id": "custom.cellOptions", "value": { "type": "color-text" } },
+              { "id": "thresholds", "value": { "mode": "absolute", "steps": [
+                { "color": "red", "value": null },
+                { "color": "orange", "value": 1 },
+                { "color": "green", "value": 10737418240 }
+              ]}}
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

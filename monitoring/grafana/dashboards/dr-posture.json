@@ -1,0 +1,203 @@
+{
+  "uid": "efp-dr-posture",
+  "title": "DR and Backup Posture",
+  "description": "Answers one question: if the primary site were lost right now, how much data would be lost and how long would recovery take? Every panel is an objective with a measurement next to it. Green/amber/red are threshold states only and always appear with a number, never as colour alone.",
+  "tags": ["platform", "disaster-recovery", "backup"],
+  "timezone": "Africa/Kigali",
+  "editable": false,
+  "schemaVersion": 39,
+  "version": 3,
+  "refresh": "1m",
+  "time": { "from": "now-7d", "to": "now" },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Recovery objectives, measured",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Current RPO — replication lag",
+      "description": "Data that would be lost in an immediate failover, expressed as bytes of write-ahead log the DR replica has not yet received. Objective: under 128 MiB.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 1 },
+      "targets": [{ "refId": "A", "expr": "max(pg_replication_lag_bytes{site=\"dc-secondary\"})", "instant": true }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "graphMode": "area", "colorMode": "value", "textMode": "value" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "orange", "value": 67108864 },
+            { "color": "red", "value": 134217728 }
+          ]}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Last drill RTO",
+      "description": "Wall-clock time the most recent disaster-recovery drill took, from the decision to promote to a verified serving platform. Objective: 120 minutes.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 1 },
+      "targets": [{ "refId": "A", "expr": "platform_dr_drill_rto_seconds", "instant": true }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "graphMode": "none", "colorMode": "value" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "orange", "value": 5400 },
+            { "color": "red", "value": 7200 }
+          ]}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Days since last DR drill",
+      "description": "An untested disaster-recovery site is a hypothesis. Drills are quarterly; amber past 100 days, red past 120.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 1 },
+      "targets": [{ "refId": "A", "expr": "(time() - platform_dr_drill_timestamp_seconds) / 86400", "instant": true }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "graphMode": "none", "colorMode": "value" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "d",
+          "decimals": 0,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "orange", "value": 100 },
+            { "color": "red", "value": 120 }
+          ]}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Days since last verified restore",
+      "description": "Not when a backup was taken — when one was last restored and asserted against. Weekly schedule; red past 14 days.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 1 },
+      "targets": [{ "refId": "A", "expr": "(time() - platform_backup_verify_timestamp_seconds) / 86400", "instant": true }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "graphMode": "none", "colorMode": "value" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "d",
+          "decimals": 0,
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "orange", "value": 8 },
+            { "color": "red", "value": 14 }
+          ]}
+        },
+        "overrides": []
+      }
+    },
+    {
+      "type": "row",
+      "title": "Backup pipeline",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 7 }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Backup duration by mode",
+      "description": "How long each backup run takes. A duration that grows steadily is a capacity signal: eventually the run will not finish before the next one starts.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [{ "refId": "A", "expr": "platform_backup_duration_seconds", "legendFormat": "{{mode}}" }],
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": {
+        "defaults": { "unit": "s", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "auto", "pointSize": 8, "axisSoftMin": 0 } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "full" },        "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#4a7fe8" } }] },
+          { "matcher": { "id": "byName", "options": "incremental" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#10a17a" } }] }
+        ]
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Backup size by mode",
+      "description": "On its own axis rather than sharing one with duration — two measures of different scale never belong on the same chart.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [{ "refId": "A", "expr": "platform_backup_size_bytes", "legendFormat": "{{mode}}" }],
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": {
+        "defaults": { "unit": "bytes", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "auto", "pointSize": 8, "axisSoftMin": 0 } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "full" },        "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#4a7fe8" } }] },
+          { "matcher": { "id": "byName", "options": "incremental" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "#10a17a" } }] }
+        ]
+      }
+    },
+    {
+      "id": 12,
+      "type": "state-timeline",
+      "title": "Backup and verification outcomes",
+      "description": "Each run as a success or failure band. A failure that resolves on the next run still matters — the gap is a window with no fresh recovery point.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 16 },
+      "targets": [
+        { "refId": "A", "expr": "platform_backup_success", "legendFormat": "backup {{mode}}" },
+        { "refId": "B", "expr": "platform_backup_verify_success", "legendFormat": "restore verification" }
+      ],
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true }, "mergeValues": true, "showValue": "never" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "fillOpacity": 85, "lineWidth": 0 },
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "FAILED", "color": "red", "index": 0 }, "1": { "text": "OK", "color": "green", "index": 1 } } }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "WAL archive growth",
+      "description": "Segments in the archive. A flat line means archiving has stopped, which silently removes point-in-time recovery between base backups.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 23 },
+      "targets": [{ "refId": "A", "expr": "platform_wal_archive_segments", "legendFormat": "archived segments" }],
+      "options": { "legend": { "showLegend": false }, "tooltip": { "mode": "single" } },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "never", "axisSoftMin": 0 },
+          "color": { "mode": "fixed", "fixedColor": "#4a7fe8" }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Retention: backups on hand",
+      "description": "Full backups retained after each pruning run. The floor is one — the pruning policy is written so it can never delete the last usable backup.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 23 },
+      "targets": [{ "refId": "A", "expr": "platform_backup_retained_count", "legendFormat": "full backups retained" }],
+      "options": { "legend": { "showLegend": false }, "tooltip": { "mode": "single" } },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "bars", "fillOpacity": 85, "lineWidth": 0, "axisSoftMin": 0 },
+          "color": { "mode": "fixed", "fixedColor": "#10a17a" }
+        },
+        "overrides": []
+      }
+    }
+  ]
+}
