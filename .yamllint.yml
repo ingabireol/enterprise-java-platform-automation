@@ -1,0 +1,20 @@
+---
+extends: default
+
+rules:
+  line-length:
+    max: 160
+    level: warning
+  comments:
+    min-spaces-from-content: 1
+  truthy:
+    allowed-values: ["true", "false", "yes", "no"]
+  braces:
+    max-spaces-inside: 1
+  octal-values:
+    forbid-implicit-octal: true
+    forbid-explicit-octal: false
+
+ignore: |
+  .github/
+  ansible/roles/*/molecule/

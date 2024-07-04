@@ -1,0 +1,115 @@
+---
+name: Lint and test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, so that a new linter release surfaces as a scheduled failure
+    # rather than as a surprise on someone's pull request.
+    - cron: '17 6 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+
+  yaml:
+    name: YAML
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install yamllint
+        run: pip install --quiet yamllint
+      - name: Lint YAML
+        run: yamllint -c .yamllint.yml ansible monitoring .github
+
+  ansible:
+    name: Ansible
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Ansible and ansible-lint
+        run: pip install --quiet "ansible-core>=2.15" ansible-lint
+      - name: Install collections
+        run: ansible-galaxy install -r ansible/requirements.yml
+      - name: Lint Ansible content
+        run: ansible-lint -p ansible/
+      - name: Check every playbook parses
+        run: |
+          for pb in ansible/playbooks/*.yml; do
+            echo "::group::$pb"
+            ansible-playbook --syntax-check -i ansible/inventories/dev/hosts.yml "$pb"
+            echo "::endgroup::"
+          done
+      - name: Check every inventory parses
+        run: |
+          for inv in ansible/inventories/*/hosts.yml; do
+            echo "::group::$inv"
+            ansible-inventory -i "$inv" --list > /dev/null
+            echo "::endgroup::"
+          done
+
+  shell:
+    name: Shell
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Lint shell scripts
+        run: find scripts -name '*.sh' -print0 | xargs -0 shellcheck -x -S style
+      - name: Install bats
+        run: sudo apt-get install -y bats
+      - name: Run bats tests
+        run: bats tests/bats
+
+  config:
+    name: Configuration validity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Prometheus configuration and rules
+        run: |
+          docker run --rm -v "$PWD/monitoring/prometheus:/cfg" \
+            --entrypoint promtool prom/prometheus:v2.54.1 \
+            check config /cfg/prometheus.yml
+          docker run --rm -v "$PWD/monitoring/prometheus:/cfg" \
+            --entrypoint promtool prom/prometheus:v2.54.1 \
+            check rules /cfg/alerts/platform.yml /cfg/alerts/application.yml \
+                        /cfg/alerts/database.yml /cfg/alerts/security.yml
+      - name: Validate Alertmanager configuration
+        run: |
+          docker run --rm -v "$PWD/monitoring/alertmanager:/cfg" \
+            --entrypoint amtool prom/alertmanager:v0.27.0 \
+            check-config /cfg/alertmanager.yml
+      - name: Validate Grafana dashboard JSON
+        run: |
+          for f in monitoring/grafana/dashboards/*.json; do
+            python3 -c "import json,sys; json.load(open('$f'))" && echo "ok: $f"
+          done
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check for committed secrets
+        run: |
+          # Fail on anything that looks like real key material or a real password.
+          if git grep -nE 'BEGIN (RSA|EC|OPENSSH|PGP) PRIVATE KEY' -- . ; then
+            echo "::error::Private key material committed"
+            exit 1
+          fi
+          if git grep -nEi '(password|secret|token)\s*[:=]\s*["'\''][^"'\''${][^"'\'']{7,}' \
+             -- ':!*.md' ':!*vault.example.yml' ':!tests/*' | grep -viE '(CHANGE-ME|changeme|example|\$\{)'; then
+            echo "::error::Possible hardcoded credential"
+            exit 1
+          fi
+          echo "No secrets detected"
