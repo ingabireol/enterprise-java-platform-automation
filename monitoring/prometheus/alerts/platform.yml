@@ -141,7 +141,7 @@ groups:
           severity: warning
           team: platform
         annotations:
-          summary: "{{ $labels.instance }} is swapping ({{ $value | humanizeBytes }})"
+          summary: "{{ $labels.instance }} is swapping ({{ $value | humanize1024 }}B)"
           description: >-
             A swapping JVM produces latency that looks like an application fault.
             The usual cause is heap plus native memory exceeding what the host has.

@@ -48,7 +48,7 @@ groups:
           severity: warning
           team: platform
         annotations:
-          summary: "Replica {{ $labels.instance }} is {{ $value | humanizeBytes }} behind the primary"
+          summary: "Replica {{ $labels.instance }} is {{ $value | humanize1024 }}B behind the primary"
           description: >-
             Replication lag is the recovery point objective made visible: this is
             how much data a failover would lose right now.
