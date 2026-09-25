@@ -24,13 +24,7 @@ The reference workload is a modern Java estate:
 
 ---
 
-## Why this repository exists
 
-It is the practical evidence behind a fairly ordinary claim: *"I can take an
-enterprise Java platform from bare servers to a hardened, monitored, backed-up,
-recoverable service — and hand the whole thing over to an in-house team."*
-
-So the repository is organised the way that work actually happens:
 
 1. **Assess** the environment → [`docs/assessment/`](docs/assessment/)
 2. **Build** it reproducibly → [`ansible/`](ansible/)
